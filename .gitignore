@@ -26,9 +26,10 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
-# Generated keypoint output (written by write_keypoints_to_disk)
+# Generated keypoint output (written by write_keypoints_to_disk).
+# Note: the calibration files in camera_parameters/*.dat are tracked inputs,
+# so we intentionally do NOT ignore all *.dat — only the generated kpts_*.dat.
 kpts_*.dat
-*.dat
 
 # OS cruft
 .DS_Store
