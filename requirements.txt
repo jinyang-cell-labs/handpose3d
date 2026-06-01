@@ -1,0 +1,10 @@
+# NOTE: mediapipe dropped the legacy `mp.solutions` API (Hands, drawing_utils)
+# in its 0.10.3x releases. This project uses that API, so mediapipe is pinned
+# to 0.10.21 — the last release that still ships mp.solutions.
+#
+# mediapipe 0.10.21 requires numpy<2 and bundles opencv-contrib-python, so we
+# do NOT install opencv-python here (it would pull numpy>=2 and conflict).
+mediapipe==0.10.21
+opencv-contrib-python==4.11.0.86
+numpy<2
+matplotlib
