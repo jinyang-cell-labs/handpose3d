@@ -5,19 +5,45 @@ This is a demo on how to obtain 3D coordinates of hand keypoints using MediaPipe
 ![input1](media/output_kpts.gif "input1") ![input2](media/output2_kpts.gif "input2") 
 ![output](media/fig_0.gif "output")
 
-**MediaPipe**  
-Install mediapipe in your virtual environment using:
+**Requirements**
 ```
-pip install mediapipe
-```
-
-**Requirements**  
-```
-Mediapipe
-Python3.8
-Opencv
+Python 3.11+        (tested on 3.12)
+mediapipe >= 0.10.30   (modern MediaPipe Tasks API)
+opencv-contrib-python
+numpy
 matplotlib
 ```
+
+> **Note on MediaPipe versions:** this project was updated to the modern **MediaPipe Tasks** API
+> (`mediapipe.tasks.python.vision.HandLandmarker`). The old `mp.solutions.hands` ("Solutions")
+> API was removed by Google in the `0.10.3x` releases, so any recent mediapipe works here — but
+> code written against `mp.solutions` will not. The Tasks API loads a downloaded model bundle
+> (`hand_landmarker.task`) instead of bundling the pipeline. See the
+> [Hand landmarker guide](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker/python).
+
+**Installation (quickstart)**
+A helper script, `run.sh`, creates a virtual environment, installs the requirements, and
+downloads the `hand_landmarker.task` model bundle automatically:
+```
+source run.sh        # sets up + activates .venv, downloads the model, keeps it active in your shell
+```
+Or run the demo in one shot (sets things up, then runs the app):
+```
+./run.sh             # uses the bundled sample videos
+./run.sh 0 1         # uses webcams 0 and 1
+```
+
+**Manual installation**
+If you prefer to set things up yourself:
+```
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# download the hand landmark model bundle into models/
+mkdir -p models
+curl -L -o models/hand_landmarker.task \
+  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+```
+The model is expected at `models/hand_landmarker.task` (this path is git-ignored).
 
 **Usage: Getting real time 3D coordinates**  
 As a demo, I've included two short video clips and corresponding camera calibration parameters. Simply run as:
@@ -37,4 +63,8 @@ The ```handpose3d.py``` program creates a 3D coordinates file: ```kpts_3d.dat```
 ```
 python show_3d_hands.py
 ```
+This renders the animated 3D hand and saves each frame as a PNG into a ```figs/``` directory
+(created automatically; git-ignored). If matplotlib falls back to the non-interactive ```Agg```
+backend it will still write the frames but cannot pop up a live window — install a GUI backend
+(e.g. ```pip install PyQt5```) if you want the interactive view.
 
