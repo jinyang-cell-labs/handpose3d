@@ -22,6 +22,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 REQUIREMENTS="${SCRIPT_DIR}/requirements.txt"
+MODEL_DIR="${SCRIPT_DIR}/models"
+MODEL_PATH="${MODEL_DIR}/hand_landmarker.task"
+MODEL_URL="https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 
 # Pick a python interpreter.
 PYTHON_BIN="$(command -v python3 || command -v python || true)"
@@ -51,6 +54,21 @@ else
 fi
 
 echo "Virtual environment is active: $(python --version) @ $(command -v python)"
+
+# Download the MediaPipe Tasks hand landmark model bundle if it is missing.
+if [[ ! -f "${MODEL_PATH}" ]]; then
+    echo "Hand landmark model not found. Downloading to ${MODEL_PATH} ..."
+    mkdir -p "${MODEL_DIR}"
+    if command -v curl >/dev/null 2>&1; then
+        curl -sSL -o "${MODEL_PATH}" "${MODEL_URL}"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "${MODEL_PATH}" "${MODEL_URL}"
+    else
+        echo "Error: need curl or wget to download the model." >&2
+        exit 1
+    fi
+    echo "Model downloaded."
+fi
 
 # If the script was executed (not sourced) and given arguments, run the app.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && [[ "$#" -gt 0 ]]; then

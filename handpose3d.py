@@ -1,13 +1,54 @@
 import cv2 as cv
 import mediapipe as mp
 import numpy as np
+import os
 import sys
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 from utils import DLT, get_projection_matrix, write_keypoints_to_disk
 
-mp_drawing = mp.solutions.drawing_utils
-mp_hands = mp.solutions.hands
-
 frame_shape = [720, 1280]
+
+#path to the MediaPipe Tasks hand landmark model bundle (auto-downloaded by run.sh)
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'hand_landmarker.task')
+
+#hand skeleton connections (21 landmarks), formerly mp.solutions.hands.HAND_CONNECTIONS
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),          #thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),          #index
+    (5, 9), (9, 10), (10, 11), (11, 12),     #middle
+    (9, 13), (13, 14), (14, 15), (15, 16),   #ring
+    (13, 17), (17, 18), (18, 19), (19, 20),  #pinky
+    (0, 17),                                 #palm base
+]
+
+
+def make_hand_landmarker():
+    #create a HandLandmarker in VIDEO running mode (new MediaPipe Tasks API)
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(
+            f"Hand landmark model not found at {MODEL_PATH}. "
+            "Run ./run.sh (it auto-downloads it) or fetch hand_landmarker.task manually."
+        )
+    options = vision.HandLandmarkerOptions(
+        base_options=python.BaseOptions(model_asset_path=MODEL_PATH),
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.5,
+        min_tracking_confidence=0.5)
+    return vision.HandLandmarker.create_from_options(options)
+
+
+def draw_hand_landmarks(frame, hand_landmarks):
+    #draw the 21-point hand skeleton on a BGR frame (replaces mp.solutions drawing_utils)
+    h, w = frame.shape[:2]
+    pts = [(int(round(lm.x * w)), int(round(lm.y * h))) for lm in hand_landmarks]
+    for a, b in HAND_CONNECTIONS:
+        cv.line(frame, pts[a], pts[b], (255, 255, 255), 2)
+    for p in pts:
+        cv.circle(frame, p, 3, (0, 0, 255), -1)
+
 
 def run_mp(input_stream1, input_stream2, P0, P1):
     #input video stream
@@ -20,14 +61,17 @@ def run_mp(input_stream1, input_stream2, P0, P1):
         cap.set(3, frame_shape[1])
         cap.set(4, frame_shape[0])
 
-    #create hand keypoints detector object.
-    hands0 = mp_hands.Hands(min_detection_confidence=0.5, max_num_hands =1, min_tracking_confidence=0.5)
-    hands1 = mp_hands.Hands(min_detection_confidence=0.5, max_num_hands =1, min_tracking_confidence=0.5)
+    #create hand keypoints detector object (one per camera so VIDEO-mode timestamps stay independent).
+    hands0 = make_hand_landmarker()
+    hands1 = make_hand_landmarker()
 
     #containers for detected keypoints for each camera
     kpts_cam0 = []
     kpts_cam1 = []
     kpts_3d = []
+
+    #VIDEO running mode requires a monotonically increasing timestamp (ms) per frame
+    frame_idx = 0
     while True:
 
         #read frames from stream
@@ -46,22 +90,23 @@ def run_mp(input_stream1, input_stream2, P0, P1):
         frame0 = cv.cvtColor(frame0, cv.COLOR_BGR2RGB)
         frame1 = cv.cvtColor(frame1, cv.COLOR_BGR2RGB)
 
-        # To improve performance, optionally mark the image as not writeable to
-        # pass by reference.
-        frame0.flags.writeable = False
-        frame1.flags.writeable = False
-        results0 = hands0.process(frame0)
-        results1 = hands1.process(frame1)
+        #wrap each RGB frame as a MediaPipe Image and run detection (VIDEO mode + timestamp)
+        timestamp_ms = frame_idx * 33  #~30 fps; only needs to be monotonically increasing
+        mp_image0 = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame0))
+        mp_image1 = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame1))
+        results0 = hands0.detect_for_video(mp_image0, timestamp_ms)
+        results1 = hands1.detect_for_video(mp_image1, timestamp_ms)
+        frame_idx += 1
 
         #prepare list of hand keypoints of this frame
         #frame0 kpts
         frame0_keypoints = []
-        if results0.multi_hand_landmarks:
-            for hand_landmarks in results0.multi_hand_landmarks:
+        if results0.hand_landmarks:
+            for hand_landmarks in results0.hand_landmarks:
                 for p in range(21):
-                    #print(p, ':', hand_landmarks.landmark[p].x, hand_landmarks.landmark[p].y)
-                    pxl_x = int(round(frame0.shape[1]*hand_landmarks.landmark[p].x))
-                    pxl_y = int(round(frame0.shape[0]*hand_landmarks.landmark[p].y))
+                    #print(p, ':', hand_landmarks[p].x, hand_landmarks[p].y)
+                    pxl_x = int(round(frame0.shape[1]*hand_landmarks[p].x))
+                    pxl_y = int(round(frame0.shape[0]*hand_landmarks[p].y))
                     kpts = [pxl_x, pxl_y]
                     frame0_keypoints.append(kpts)
 
@@ -74,12 +119,12 @@ def run_mp(input_stream1, input_stream2, P0, P1):
 
         #frame1 kpts
         frame1_keypoints = []
-        if results1.multi_hand_landmarks:
-            for hand_landmarks in results1.multi_hand_landmarks:
+        if results1.hand_landmarks:
+            for hand_landmarks in results1.hand_landmarks:
                 for p in range(21):
-                    #print(p, ':', hand_landmarks.landmark[p].x, hand_landmarks.landmark[p].y)
-                    pxl_x = int(round(frame1.shape[1]*hand_landmarks.landmark[p].x))
-                    pxl_y = int(round(frame1.shape[0]*hand_landmarks.landmark[p].y))
+                    #print(p, ':', hand_landmarks[p].x, hand_landmarks[p].y)
+                    pxl_x = int(round(frame1.shape[1]*hand_landmarks[p].x))
+                    pxl_y = int(round(frame1.shape[0]*hand_landmarks[p].y))
                     kpts = [pxl_x, pxl_y]
                     frame1_keypoints.append(kpts)
 
@@ -108,18 +153,16 @@ def run_mp(input_stream1, input_stream2, P0, P1):
         kpts_3d.append(frame_p3ds)
 
         # Draw the hand annotations on the image.
-        frame0.flags.writeable = True
-        frame1.flags.writeable = True
         frame0 = cv.cvtColor(frame0, cv.COLOR_RGB2BGR)
         frame1 = cv.cvtColor(frame1, cv.COLOR_RGB2BGR)
 
-        if results0.multi_hand_landmarks:
-          for hand_landmarks in results0.multi_hand_landmarks:
-            mp_drawing.draw_landmarks(frame0, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        if results0.hand_landmarks:
+          for hand_landmarks in results0.hand_landmarks:
+            draw_hand_landmarks(frame0, hand_landmarks)
 
-        if results1.multi_hand_landmarks:
-          for hand_landmarks in results1.multi_hand_landmarks:
-            mp_drawing.draw_landmarks(frame1, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        if results1.hand_landmarks:
+          for hand_landmarks in results1.hand_landmarks:
+            draw_hand_landmarks(frame1, hand_landmarks)
         cv.imshow('cam1', frame1)
         cv.imshow('cam0', frame0)
 
@@ -130,6 +173,8 @@ def run_mp(input_stream1, input_stream2, P0, P1):
     cv.destroyAllWindows()
     for cap in caps:
         cap.release()
+    hands0.close()
+    hands1.close()
 
     return np.array(kpts_cam0), np.array(kpts_cam1), np.array(kpts_3d)
 
