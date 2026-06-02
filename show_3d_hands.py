@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from utils import DLT
@@ -42,6 +43,9 @@ def visualize_3d(p3ds):
     p3ds_rotated = np.array(p3ds_rotated)
 
     """Now visualize in 3D"""
+    #ensure the output directory for the per-frame PNGs exists
+    os.makedirs('figs', exist_ok=True)
+
     thumb_f = [[0,1],[1,2],[2,3],[3,4]]
     index_f = [[0,5],[5,6],[6,7],[7,8]]
     middle_f = [[0,9],[9,10],[10,11],[11, 12]]

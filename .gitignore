@@ -31,6 +31,9 @@ htmlcov/
 # so we intentionally do NOT ignore all *.dat — only the generated kpts_*.dat.
 kpts_*.dat
 
+# Per-frame PNGs rendered by show_3d_hands.py
+figs/
+
 # OS cruft
 .DS_Store
 Thumbs.db
