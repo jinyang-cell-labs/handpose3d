@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>vision_interfaces</name>
+  <version>0.1.0</version>
+  <description>
+    Camera frontend for the handpose3d stack. Publishes image_raw and
+    camera_info topics from either live cameras or recorded video files.
+  </description>
+  <maintainer email="jinyang@cell-labs.ai">jinyang</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>camera_info_manager_py</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -16,6 +16,11 @@ dist/
 *.egg-info/
 .eggs/
 
+# colcon workspace artifacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
 # Test / coverage caches
 .pytest_cache/
 .mypy_cache/
@@ -26,16 +31,17 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
-# Generated keypoint output (written by write_keypoints_to_disk).
-# Note: the calibration files in camera_parameters/*.dat are tracked inputs,
-# so we intentionally do NOT ignore all *.dat — only the generated kpts_*.dat.
+# Legacy generated keypoint output (write_keypoints_to_disk). The calibration
+# files in legacy/camera_parameters/*.dat are tracked inputs, so we ignore only
+# the generated kpts_*.dat.
 kpts_*.dat
+legacy/kpts_*.dat
 
-# Per-frame PNGs rendered by show_3d_hands.py
+# Per-frame PNGs rendered by the legacy show_3d_hands.py
 figs/
 
-# Downloaded MediaPipe Tasks model bundle (fetched by run.sh)
-models/
+# Downloaded MediaPipe Tasks model bundle (fetched by scripts/download_model.sh)
+*.task
 
 # OS cruft
 .DS_Store

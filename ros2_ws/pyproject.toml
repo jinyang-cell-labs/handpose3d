@@ -1,0 +1,38 @@
+[project]
+name = "handpose3d-ros2-ws"
+version = "0.1.0"
+description = "ROS2 workspace for 3D hand pose estimation (vision_interfaces + handpose_estimation)"
+requires-python = ">=3.12"
+dependencies = [
+    # Vision / pose estimation. Uses the modern MediaPipe Tasks API
+    # (vision.HandLandmarker), not the removed legacy mp.solutions.
+    "mediapipe>=0.10.30",
+    "opencv-contrib-python",
+    # ROS2 required versions (the venv shadows the system interpreter at build
+    # time, so colcon needs these pinned exactly as the system expects).
+    "setuptools==68.1.2",
+    "pyyaml==6.0.1",
+    "catkin_pkg==1.0.0",
+    "empy==3.3.4",
+    "numpy<2.0.0",
+    "lark==1.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.1.2"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["I"]

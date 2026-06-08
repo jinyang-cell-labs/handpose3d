@@ -1,0 +1,24 @@
+# Stereo extrinsics for handpose_estimation triangulation.
+#
+# Each camera's world->camera rotation (3x3, row-major) and translation (3,),
+# ported from the original handpose3d camera_parameters/rot_trans_c{0,1}.dat.
+# The intrinsic matrix K is taken at runtime from each camera_info topic; the
+# projection matrix is built as P = K @ [R | t].
+#
+# The world frame is the stereo calibration frame; 3D output is in its units
+# (see the `scale` parameter in handpose_estimation.yaml for the RViz mapping).
+
+cameras:
+  camera0:
+    rotation:
+      - [-0.09562738931901762, 0.9953225224879513, -0.013728752319527221]
+      - [-0.8585781965838023, -0.07549495398817564, 0.5070936720895154]
+      - [0.5036853013171367, 0.060279251409959794, 0.861781601733595]
+    translation: [-2.737788430243877, 1.0294288085275956, 16.78699719310363]
+
+  camera1:
+    rotation:
+      - [-0.97819845, 0.20659395, 0.02113628]
+      - [-0.12772408, -0.67874616, 0.72318062]
+      - [0.16375091, 0.70471455, 0.69033546]
+    translation: [1.38111884, 5.19805597, 16.669449]

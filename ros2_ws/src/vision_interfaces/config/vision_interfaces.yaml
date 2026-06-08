@@ -1,0 +1,20 @@
+camera_publisher_node:
+  ros__parameters:
+    # "video" replays files; "camera" opens live V4L devices.
+    source_type: "video"
+    video_paths:
+      - "/workspace/media/cam0_test.mp4"
+      - "/workspace/media/cam1_test.mp4"
+    camera_devices: ["0", "1"]
+    camera_names: ["camera0", "camera1"]
+    camera_info_urls:
+      - "package://vision_interfaces/config/camera_info/camera0.yaml"
+      - "package://vision_interfaces/config/camera_info/camera1.yaml"
+    frame_rate: 30.0
+    # The handpose3d calibration was computed on a centre-cropped square frame;
+    # keep this on so the published image matches the camera_info intrinsics.
+    crop_square: true
+    output_size: 720
+    capture_width: 1280
+    capture_height: 720
+    loop: true

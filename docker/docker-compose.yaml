@@ -1,0 +1,40 @@
+services:
+  # Single container holding the whole stack (camera frontend + hand pose
+  # estimation + RViz). It does NOT build or launch automatically — it just
+  # stays up. Exec in and drive it by hand with the `cb` / `cbs` / `cbc`
+  # build aliases:
+  #
+  #   docker compose up -d handpose3d
+  #   docker compose exec handpose3d bash
+  #   cb                                            # colcon build
+  #   source install/setup.bash
+  #   ros2 launch vision_interfaces vision_interfaces.launch.py &
+  #   ros2 launch handpose_estimation handpose_estimation.launch.py
+  #
+  # The repo is bind-mounted at /workspace so host edits take effect on the
+  # next build. All nodes share the container's loopback, so ROS 2 discovery
+  # needs no network config.
+  handpose3d:
+    image: handpose3d-stack
+    container_name: handpose3d
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      # Keep ROS 2 discovery on loopback inside the container.
+      ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+      DISPLAY: ${DISPLAY}
+      XAUTHORITY: /tmp/.Xauthority
+    volumes:
+      - ..:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${XAUTHORITY:-${HOME}/.Xauthority}:/tmp/.Xauthority:ro
+      - /dev:/dev
+    privileged: true
+    networks:
+      - ros2-network
+    command: sleep infinity
+
+networks:
+  ros2-network:
+    driver: bridge
