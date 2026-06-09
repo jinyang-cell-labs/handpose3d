@@ -293,9 +293,7 @@ class HandPoseNode(Node):
 
         keypoints_2d = []  # per-camera (21, 2) pixel arrays (NaN where missing)
         for i, (name, msg) in enumerate(zip(self.camera_names, msgs)):
-            frame_bgr = np.frombuffer(msg.data, dtype=np.uint8).reshape(
-                msg.height, msg.width, 3
-            )
+            frame_bgr = self._decode_to_bgr(msg)
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(
                 image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame_rgb)
@@ -325,6 +323,37 @@ class HandPoseNode(Node):
             points_3d[p] = dlt(P0, P1, kp0[p], kp1[p])
 
         self._publish_markers(points_3d, msgs[0].header.stamp)
+
+    def _decode_to_bgr(self, msg):
+        """Decode a sensor_msgs/Image to a contiguous bgr8 ndarray.
+
+        Honors msg.encoding (rgb8/bgr8/rgba8/bgra8/mono8) and msg.step (row
+        stride / padding). The previous code hard-assumed bgr8 with no padding,
+        which silently swaps R/B (poor MediaPipe detection) for rgb8 sources or
+        shears the image when rows are padded.
+        """
+        enc = (msg.encoding or "bgr8").lower()
+        channels = {
+            "rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4, "mono8": 1, "8uc1": 1,
+        }.get(enc, 3)
+
+        buf = np.frombuffer(msg.data, dtype=np.uint8)
+        step = msg.step if msg.step else msg.width * channels
+        # Reshape by stride, then drop any trailing row padding.
+        arr = buf[: step * msg.height].reshape(msg.height, step)
+        arr = arr[:, : msg.width * channels].reshape(msg.height, msg.width, channels)
+
+        if enc == "rgb8":
+            bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        elif enc == "rgba8":
+            bgr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+        elif enc == "bgra8":
+            bgr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+        elif enc in ("mono8", "8uc1"):
+            bgr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+        else:  # bgr8 or unknown 3-channel
+            bgr = arr[:, :, :3]
+        return np.ascontiguousarray(bgr)
 
     # ------------------------------------------------------------- publishing
     def _publish_markers(self, points_3d, stamp):

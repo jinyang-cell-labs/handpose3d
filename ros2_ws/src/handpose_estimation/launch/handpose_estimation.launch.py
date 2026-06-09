@@ -25,6 +25,13 @@ def generate_launch_description():
                 name="handpose_node",
                 output="screen",
                 parameters=[config_file],
+                # The node subscribes to <name>/image_raw and <name>/camera_info.
+                # The camera_info topics already match; remap the image topics to
+                # the rotated streams. (frame_id stays camera0/camera1 for TF.)
+                remappings=[
+                    ("camera0/image_raw", "/camera0_rot/image_rotated"),
+                    ("camera1/image_raw", "/camera1_rot/image_rotated"),
+                ],
             ),
             # Note: handpose_node broadcasts the world->camera TF for each
             # camera from the extrinsics, which also provides RViz's 'world'
