@@ -54,6 +54,19 @@ HAND_CONNECTIONS = [
 ]
 N_LANDMARKS = 21
 
+# Standard scenario: one person, up to two hands. Hands are matched across the
+# two cameras by MediaPipe's handedness label.
+HAND_LABELS = ("Left", "Right")
+# RViz marker colors (RGBA) per hand.
+HAND_COLORS = {
+    "Left": ColorRGBA(r=0.2, g=0.6, b=1.0, a=1.0),   # blue
+    "Right": ColorRGBA(r=1.0, g=0.5, b=0.2, a=1.0),  # orange
+}
+# BGR colors for the 2D annotated overlay (OpenCV order).
+HAND_BGR = {"Left": (255, 150, 50), "Right": (50, 150, 255)}
+# Stable (joints, bones) marker ids per hand so updates replace in place.
+HAND_MARKER_IDS = {"Left": (0, 1), "Right": (2, 3)}
+
 
 class HandPoseNode(Node):
     def __init__(self):
@@ -70,7 +83,10 @@ class HandPoseNode(Node):
             "/workspace/ros2_ws/src/handpose_estimation/config/extrinsics.yaml",
         )
         self.declare_parameter("world_frame", "world")
-        self.declare_parameter("num_hands", 1)
+        self.declare_parameter("num_hands", 2)
+        # Flip camera1's Left/Right labels if the two views are mirror-flipped
+        # relative to each other (handedness then disagrees across cameras).
+        self.declare_parameter("swap_handedness_camera1", False)
         self.declare_parameter("min_hand_detection_confidence", 0.5)
         self.declare_parameter("min_hand_presence_confidence", 0.5)
         self.declare_parameter("min_tracking_confidence", 0.5)
@@ -92,6 +108,9 @@ class HandPoseNode(Node):
         self.extrinsics_file = self.get_parameter("extrinsics_file").value
         self.world_frame = self.get_parameter("world_frame").value
         self.num_hands = int(self.get_parameter("num_hands").value)
+        self.swap_handedness_camera1 = bool(
+            self.get_parameter("swap_handedness_camera1").value
+        )
         self.scale = float(self.get_parameter("scale").value)
         self.joint_size = float(self.get_parameter("joint_size").value)
         self.line_width = float(self.get_parameter("line_width").value)
@@ -291,38 +310,76 @@ class HandPoseNode(Node):
         timestamp_ms = self._frame_idx * 33  # monotonically increasing for VIDEO mode
         self._frame_idx += 1
 
-        keypoints_2d = []  # per-camera (21, 2) pixel arrays (NaN where missing)
+        # Per camera, detect all hands keyed by handedness: {label: (21, 2)}.
+        hands_2d = []
         for i, (name, msg) in enumerate(zip(self.camera_names, msgs)):
             frame_bgr = self._decode_to_bgr(msg)
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(
-                image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame_rgb)
+            hands = self._detect_hands(
+                self.detectors[i], frame_rgb, timestamp_ms, msg.width, msg.height
             )
-            result = self.detectors[i].detect_for_video(mp_image, timestamp_ms)
-
-            kpts = np.full((N_LANDMARKS, 2), np.nan)
-            if result.hand_landmarks:
-                hand = result.hand_landmarks[0]
-                for p in range(N_LANDMARKS):
-                    kpts[p, 0] = hand[p].x * msg.width
-                    kpts[p, 1] = hand[p].y * msg.height
-            keypoints_2d.append(kpts)
+            if i == 1 and self.swap_handedness_camera1:
+                hands = {self._other_label(lbl): kp for lbl, kp in hands.items()}
+            hands_2d.append(hands)
 
             if self.publish_annotated and name in self.annotated_pubs:
-                self._publish_annotated(name, frame_bgr.copy(), kpts, msg.header)
+                self._publish_annotated(name, frame_bgr.copy(), hands, msg.header)
 
-        # --- triangulate ----------------------------------------------------
+        # Match hands across cameras by handedness label, triangulate each.
+        points_3d_by_hand = {}
+        for label in HAND_LABELS:
+            kp0 = hands_2d[0].get(label)
+            kp1 = hands_2d[1].get(label)
+            if kp0 is None or kp1 is None:
+                continue
+            points_3d_by_hand[label] = self._triangulate_hand(kp0, kp1)
+
+        # Periodic visibility into handedness agreement across the two views.
+        self.get_logger().info(
+            f"cam0={sorted(hands_2d[0])} cam1={sorted(hands_2d[1])} "
+            f"-> triangulated {sorted(points_3d_by_hand)}",
+            throttle_duration_sec=5.0,
+        )
+
+        self._publish_markers(points_3d_by_hand, msgs[0].header.stamp)
+
+    @staticmethod
+    def _other_label(label):
+        return "Right" if label == "Left" else "Left"
+
+    def _detect_hands(self, detector, frame_rgb, timestamp_ms, width, height):
+        """Run the landmarker; return {handedness_label: (21, 2) pixel array}.
+
+        If the same label is reported twice (rare), the higher-confidence hand
+        wins so each of Left/Right maps to a single detection.
+        """
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame_rgb)
+        )
+        result = detector.detect_for_video(mp_image, timestamp_ms)
+        hands, scores = {}, {}
+        if result.hand_landmarks:
+            for lm_list, handed in zip(result.hand_landmarks, result.handedness):
+                label = handed[0].category_name  # "Left" / "Right"
+                score = handed[0].score
+                if label in hands and score <= scores[label]:
+                    continue
+                hands[label] = np.array(
+                    [[lm.x * width, lm.y * height] for lm in lm_list], dtype=float
+                )
+                scores[label] = score
+        return hands
+
+    def _triangulate_hand(self, kp0, kp1):
+        """DLT-triangulate the 21 landmarks of one matched hand -> (21, 3)."""
         P0 = self.P[self.camera_names[0]]
         P1 = self.P[self.camera_names[1]]
-        kp0, kp1 = keypoints_2d[0], keypoints_2d[1]
-
         points_3d = np.full((N_LANDMARKS, 3), np.nan)
         for p in range(N_LANDMARKS):
             if np.isnan(kp0[p, 0]) or np.isnan(kp1[p, 0]):
                 continue
             points_3d[p] = dlt(P0, P1, kp0[p], kp1[p])
-
-        self._publish_markers(points_3d, msgs[0].header.stamp)
+        return points_3d
 
     def _decode_to_bgr(self, msg):
         """Decode a sensor_msgs/Image to a contiguous bgr8 ndarray.
@@ -356,67 +413,76 @@ class HandPoseNode(Node):
         return np.ascontiguousarray(bgr)
 
     # ------------------------------------------------------------- publishing
-    def _publish_markers(self, points_3d, stamp):
+    def _publish_markers(self, points_3d_by_hand, stamp):
+        """Publish a joints + bones marker per hand.
+
+        Both Left and Right are always published (with stable ids); a hand that
+        is absent this frame is published with no points, which clears its
+        previous skeleton in RViz instead of leaving it stale.
+        """
         marker_array = MarkerArray()
+        for label in HAND_LABELS:
+            points_3d = points_3d_by_hand.get(label)
+            color = HAND_COLORS[label]
+            joint_id, bone_id = HAND_MARKER_IDS[label]
 
-        # Joints (spheres)
-        joints = Marker()
-        joints.header.frame_id = self.world_frame
-        joints.header.stamp = stamp
-        joints.ns = "hand_joints"
-        joints.id = 0
-        joints.type = Marker.SPHERE_LIST
-        joints.action = Marker.ADD
-        joints.scale.x = joints.scale.y = joints.scale.z = self.joint_size
-        joints.color = ColorRGBA(r=1.0, g=0.2, b=0.2, a=1.0)
-        joints.lifetime = Duration(sec=0, nanosec=200_000_000)
-        joints.pose.orientation.w = 1.0
+            joints = Marker()
+            joints.header.frame_id = self.world_frame
+            joints.header.stamp = stamp
+            joints.ns = f"hand_{label.lower()}_joints"
+            joints.id = joint_id
+            joints.type = Marker.SPHERE_LIST
+            joints.action = Marker.ADD
+            joints.scale.x = joints.scale.y = joints.scale.z = self.joint_size
+            joints.color = color
+            joints.lifetime = Duration(sec=0, nanosec=200_000_000)
+            joints.pose.orientation.w = 1.0
 
-        # Bones (line list)
-        bones = Marker()
-        bones.header.frame_id = self.world_frame
-        bones.header.stamp = stamp
-        bones.ns = "hand_bones"
-        bones.id = 1
-        bones.type = Marker.LINE_LIST
-        bones.action = Marker.ADD
-        bones.scale.x = self.line_width
-        bones.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
-        bones.lifetime = Duration(sec=0, nanosec=200_000_000)
-        bones.pose.orientation.w = 1.0
+            bones = Marker()
+            bones.header.frame_id = self.world_frame
+            bones.header.stamp = stamp
+            bones.ns = f"hand_{label.lower()}_bones"
+            bones.id = bone_id
+            bones.type = Marker.LINE_LIST
+            bones.action = Marker.ADD
+            bones.scale.x = self.line_width
+            bones.color = color
+            bones.lifetime = Duration(sec=0, nanosec=200_000_000)
+            bones.pose.orientation.w = 1.0
 
-        def to_point(idx):
-            x, y, z = points_3d[idx] * self.scale
-            return Point(x=float(x), y=float(y), z=float(z))
+            if points_3d is not None:
+                def to_point(idx, _p3d=points_3d):
+                    x, y, z = _p3d[idx] * self.scale
+                    return Point(x=float(x), y=float(y), z=float(z))
 
-        valid = ~np.isnan(points_3d[:, 0])
-        for p in range(N_LANDMARKS):
-            if valid[p]:
-                joints.points.append(to_point(p))
-        for a, b in HAND_CONNECTIONS:
-            if valid[a] and valid[b]:
-                bones.points.append(to_point(a))
-                bones.points.append(to_point(b))
+                valid = ~np.isnan(points_3d[:, 0])
+                for p in range(N_LANDMARKS):
+                    if valid[p]:
+                        joints.points.append(to_point(p))
+                for a, b in HAND_CONNECTIONS:
+                    if valid[a] and valid[b]:
+                        bones.points.append(to_point(a))
+                        bones.points.append(to_point(b))
 
-        marker_array.markers.append(joints)
-        marker_array.markers.append(bones)
+            marker_array.markers.append(joints)
+            marker_array.markers.append(bones)
         self.marker_pub.publish(marker_array)
 
-    def _publish_annotated(self, name, frame_bgr, kpts, header):
+    def _publish_annotated(self, name, frame_bgr, hands, header):
         h, w = frame_bgr.shape[:2]
-        # Build pixel points only for detected landmarks. When no hand is found
-        # (e.g. the first frames after a video loop), kpts is all-NaN — skip
-        # those so we never feed NaN to int()/cv2.
-        pts = {
-            p: (int(round(kpts[p, 0])), int(round(kpts[p, 1])))
-            for p in range(N_LANDMARKS)
-            if not np.isnan(kpts[p, 0])
-        }
-        for a, b in HAND_CONNECTIONS:
-            if a in pts and b in pts:
-                cv2.line(frame_bgr, pts[a], pts[b], (255, 255, 255), 2)
-        for p in pts.values():
-            cv2.circle(frame_bgr, p, 3, (0, 0, 255), -1)
+        # Draw every detected hand, color-coded by handedness.
+        for label, kpts in hands.items():
+            color = HAND_BGR.get(label, (255, 255, 255))
+            pts = {
+                p: (int(round(kpts[p, 0])), int(round(kpts[p, 1])))
+                for p in range(N_LANDMARKS)
+                if not np.isnan(kpts[p, 0])
+            }
+            for a, b in HAND_CONNECTIONS:
+                if a in pts and b in pts:
+                    cv2.line(frame_bgr, pts[a], pts[b], color, 2)
+            for p in pts.values():
+                cv2.circle(frame_bgr, p, 3, color, -1)
 
         img = Image()
         img.header = header
