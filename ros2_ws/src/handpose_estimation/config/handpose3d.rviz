@@ -36,6 +36,17 @@ Visualization Manager:
         History Policy: Keep Last
       Namespaces:
         {}
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Cameras
+      Enabled: true
+      Topic:
+        Value: /handpose/cameras
+        Depth: 5
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Namespaces:
+        {}
     - Class: rviz_default_plugins/Image
       Name: camera0 annotated
       Enabled: true

@@ -24,19 +24,24 @@ import numpy as np
 import rclpy
 import yaml
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, TransformStamped
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import ColorRGBA
+from tf2_ros import StaticTransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
 
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
-from handpose_estimation.triangulation import dlt, make_projection_matrix
+from handpose_estimation.triangulation import (
+    dlt,
+    make_projection_matrix,
+    rotation_matrix_to_quaternion,
+)
 
 # Hand skeleton connections (21 landmarks), formerly mp.solutions.hands.HAND_CONNECTIONS
 HAND_CONNECTIONS = [
@@ -76,6 +81,9 @@ class HandPoseNode(Node):
         self.declare_parameter("joint_size", 0.02)
         self.declare_parameter("line_width", 0.01)
         self.declare_parameter("publish_annotated", True)
+        # Publish each camera's pose (from extrinsics) as TF + a frustum marker.
+        self.declare_parameter("publish_camera_pose", True)
+        self.declare_parameter("camera_marker_size", 0.08)
 
         self.camera_names = list(self.get_parameter("camera_names").value)
         if len(self.camera_names) != 2:
@@ -88,6 +96,12 @@ class HandPoseNode(Node):
         self.joint_size = float(self.get_parameter("joint_size").value)
         self.line_width = float(self.get_parameter("line_width").value)
         self.publish_annotated = bool(self.get_parameter("publish_annotated").value)
+        self.publish_camera_pose = bool(
+            self.get_parameter("publish_camera_pose").value
+        )
+        self.camera_marker_size = float(
+            self.get_parameter("camera_marker_size").value
+        )
 
         # --- mediapipe detectors (one per camera so VIDEO timestamps stay
         # independent) ------------------------------------------------------
@@ -137,6 +151,21 @@ class HandPoseNode(Node):
                     Image, f"{name}/handpose/annotated", qos_profile_sensor_data
                 )
 
+        # --- camera poses ---------------------------------------------------
+        # Broadcast each camera's pose as static TF (this also gives RViz the
+        # 'world' frame to use as fixed frame) and a latched frustum marker so
+        # late-joining RViz still receives it.
+        if self.publish_camera_pose:
+            self.static_tf_broadcaster = StaticTransformBroadcaster(self)
+            latching_qos = QoSProfile(
+                depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL
+            )
+            self.camera_marker_pub = self.create_publisher(
+                MarkerArray, "handpose/cameras", latching_qos
+            )
+            self._broadcast_camera_poses()
+            self._publish_camera_markers()
+
         self.get_logger().info(
             f"handpose_node ready: cameras={self.camera_names}, "
             f"world_frame='{self.world_frame}', waiting for camera_info + images..."
@@ -175,6 +204,71 @@ class HandPoseNode(Node):
             t = np.array(cameras[name]["translation"], dtype=float).reshape(3)
             ext[name] = (R, t)
         return ext
+
+    # ------------------------------------------------------------ camera poses
+    def _broadcast_camera_poses(self):
+        """Publish world->camera static transforms from the extrinsics.
+
+        Extrinsics are world->camera (X_cam = R X_world + t), so the camera's
+        pose in the world is the inverse: orientation R^T, centre -R^T t. The
+        centre is scaled by `scale` to share the hand markers' metric space.
+        """
+        stamp = self.get_clock().now().to_msg()
+        transforms = []
+        for name in self.camera_names:
+            R, t = self.extrinsics[name]
+            R_wc = R.T
+            center = (-R_wc @ t) * self.scale
+            q = rotation_matrix_to_quaternion(R_wc)
+
+            tf = TransformStamped()
+            tf.header.stamp = stamp
+            tf.header.frame_id = self.world_frame
+            tf.child_frame_id = name
+            tf.transform.translation.x = float(center[0])
+            tf.transform.translation.y = float(center[1])
+            tf.transform.translation.z = float(center[2])
+            tf.transform.rotation.x = float(q[0])
+            tf.transform.rotation.y = float(q[1])
+            tf.transform.rotation.z = float(q[2])
+            tf.transform.rotation.w = float(q[3])
+            transforms.append(tf)
+        self.static_tf_broadcaster.sendTransform(transforms)
+        self.get_logger().info(
+            f"Broadcast camera poses to TF: {self.camera_names}"
+        )
+
+    def _publish_camera_markers(self):
+        """Draw a small frustum per camera in its own (optical) frame."""
+        d = self.camera_marker_size
+        w, h = d * 0.6, d * 0.45
+        # Optical-frame convention: x right, y down, z forward.
+        corners = [(-w, -h, d), (w, -h, d), (w, h, d), (-w, h, d)]
+
+        array = MarkerArray()
+        stamp = self.get_clock().now().to_msg()
+        for i, name in enumerate(self.camera_names):
+            m = Marker()
+            m.header.frame_id = name
+            m.header.stamp = stamp
+            m.ns = "camera_frustum"
+            m.id = i
+            m.type = Marker.LINE_LIST
+            m.action = Marker.ADD
+            m.scale.x = max(d * 0.02, 0.002)
+            m.color = ColorRGBA(r=0.2, g=0.8, b=1.0, a=1.0)
+            m.pose.orientation.w = 1.0
+
+            apex = Point(x=0.0, y=0.0, z=0.0)
+            cpts = [Point(x=float(c[0]), y=float(c[1]), z=float(c[2])) for c in corners]
+            for cp in cpts:  # apex -> each corner
+                m.points.append(apex)
+                m.points.append(cp)
+            for j in range(4):  # rectangle around the far plane
+                m.points.append(cpts[j])
+                m.points.append(cpts[(j + 1) % 4])
+            array.markers.append(m)
+        self.camera_marker_pub.publish(array)
 
     # --------------------------------------------------------------- callbacks
     def _on_camera_info(self, msg, name):

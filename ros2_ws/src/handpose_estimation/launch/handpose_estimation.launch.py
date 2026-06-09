@@ -26,15 +26,9 @@ def generate_launch_description():
                 output="screen",
                 parameters=[config_file],
             ),
-            # Make the 'world' frame exist in the TF tree so RViz's fixed frame
-            # resolves (identity transform world -> camera0).
-            launch_ros.actions.Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name="world_to_camera0",
-                output="screen",
-                arguments=["0", "0", "0", "0", "0", "0", "world", "camera0"],
-            ),
+            # Note: handpose_node broadcasts the world->camera TF for each
+            # camera from the extrinsics, which also provides RViz's 'world'
+            # fixed frame — no separate static_transform_publisher needed.
             launch_ros.actions.Node(
                 package="rviz2",
                 executable="rviz2",

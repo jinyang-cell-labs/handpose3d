@@ -16,3 +16,6 @@ handpose_node:
     joint_size: 0.02
     line_width: 0.01
     publish_annotated: true
+    # Publish each camera's pose (from extrinsics) as TF + a frustum marker.
+    publish_camera_pose: true
+    camera_marker_size: 0.08
