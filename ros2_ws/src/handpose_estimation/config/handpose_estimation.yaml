@@ -3,6 +3,10 @@ handpose_node:
     camera_names: ["camera0", "camera1"]
     model_path: "/workspace/ros2_ws/src/handpose_estimation/models/hand_landmarker.task"
     extrinsics_file: "/workspace/ros2_ws/src/handpose_estimation/config/extrinsics.yaml"
+    # true:  triangulate from the camera_info stereo calibration (undistort +
+    #        rectify with K/D/R/P, baseline from P). extrinsics.yaml is ignored.
+    # false: use extrinsics.yaml + raw K + DLT (no distortion correction).
+    use_camera_info_extrinsics: true
     world_frame: "world"
     num_hands: 2
     # Set true if the two views are mirror-flipped relative to each other, so

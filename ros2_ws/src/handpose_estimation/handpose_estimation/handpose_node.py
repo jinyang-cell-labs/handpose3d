@@ -67,6 +67,16 @@ HAND_BGR = {"Left": (255, 150, 50), "Right": (50, 150, 255)}
 # Stable (joints, bones) marker ids per hand so updates replace in place.
 HAND_MARKER_IDS = {"Left": (0, 1), "Right": (2, 3)}
 
+# ===== HOTFIX(rotate-90): TEMPORARY =========================================
+# The current rosbag publishes a 90deg-rotated image (hardware limitation).
+# We rotate it upright before detection so MediaPipe works and the frame lines
+# up with the camera_info calibration (landscape 640x480 -> portrait 480x640).
+# Set to None to disable, or DELETE this constant + the fenced block in
+# _on_images, once the upstream publishes upright images.
+#   options: cv2.ROTATE_90_CLOCKWISE / cv2.ROTATE_90_COUNTERCLOCKWISE / cv2.ROTATE_180
+_HOTFIX_ROTATE = cv2.ROTATE_90_CLOCKWISE
+# ============================================================================
+
 
 class HandPoseNode(Node):
     def __init__(self):
@@ -82,6 +92,10 @@ class HandPoseNode(Node):
             "extrinsics_file",
             "/workspace/ros2_ws/src/handpose_estimation/config/extrinsics.yaml",
         )
+        # true  -> triangulate from the camera_info stereo calibration
+        #          (undistort/rectify with K/D/R/P + cv2.triangulatePoints).
+        # false -> raw K + extrinsics.yaml + DLT (no distortion handling).
+        self.declare_parameter("use_camera_info_extrinsics", False)
         self.declare_parameter("world_frame", "world")
         self.declare_parameter("num_hands", 2)
         # Flip camera1's Left/Right labels if the two views are mirror-flipped
@@ -106,6 +120,9 @@ class HandPoseNode(Node):
             raise ValueError("handpose_node requires exactly 2 camera_names")
         self.model_path = self.get_parameter("model_path").value
         self.extrinsics_file = self.get_parameter("extrinsics_file").value
+        self.use_camera_info_extrinsics = bool(
+            self.get_parameter("use_camera_info_extrinsics").value
+        )
         self.world_frame = self.get_parameter("world_frame").value
         self.num_hands = int(self.get_parameter("num_hands").value)
         self.swap_handedness_camera1 = bool(
@@ -133,11 +150,20 @@ class HandPoseNode(Node):
         self._frame_idx = 0
 
         # --- calibration state ---------------------------------------------
-        self.extrinsics = self._load_extrinsics(self.extrinsics_file)
-        # Intrinsics arrive on the camera_info topics; projection matrices are
-        # built lazily once both K matrices are known.
-        self.K = {name: None for name in self.camera_names}
-        self.P = {name: None for name in self.camera_names}
+        # extrinsics.yaml is only needed for the 'extrinsics' path; skip loading
+        # it when triangulating from the camera_info stereo calibration.
+        self.extrinsics = (
+            None
+            if self.use_camera_info_extrinsics
+            else self._load_extrinsics(self.extrinsics_file)
+        )
+        # Full per-camera calibration (k/d/r/p/model) captured from camera_info;
+        # the triangulation mode is chosen once both have arrived.
+        self.calib = {name: None for name in self.camera_names}
+        self.P_ext = {name: None for name in self.camera_names}
+        self.mode = None
+        self.ready = False
+        self.effective_scale = self.scale
 
         # --- subscriptions & publishers ------------------------------------
         self.info_subs = []
@@ -174,6 +200,10 @@ class HandPoseNode(Node):
         # Broadcast each camera's pose as static TF (this also gives RViz the
         # 'world' frame to use as fixed frame) and a latched frustum marker so
         # late-joining RViz still receives it.
+        # Poses are published from _on_calibration_ready() — the stereo path
+        # derives them from camera_info P, which hasn't arrived yet.
+        self.static_tf_broadcaster = None
+        self.camera_marker_pub = None
         if self.publish_camera_pose:
             self.static_tf_broadcaster = StaticTransformBroadcaster(self)
             latching_qos = QoSProfile(
@@ -182,8 +212,6 @@ class HandPoseNode(Node):
             self.camera_marker_pub = self.create_publisher(
                 MarkerArray, "handpose/cameras", latching_qos
             )
-            self._broadcast_camera_poses()
-            self._publish_camera_markers()
 
         self.get_logger().info(
             f"handpose_node ready: cameras={self.camera_names}, "
@@ -226,18 +254,27 @@ class HandPoseNode(Node):
 
     # ------------------------------------------------------------ camera poses
     def _broadcast_camera_poses(self):
-        """Publish world->camera static transforms from the extrinsics.
+        """Publish world->camera static transforms (mode-dependent).
 
-        Extrinsics are world->camera (X_cam = R X_world + t), so the camera's
-        pose in the world is the inverse: orientation R^T, centre -R^T t. The
-        centre is scaled by `scale` to share the hand markers' metric space.
+        - extrinsics mode: extrinsics are world->camera (X_cam = R X_world + t),
+          so the pose in world is the inverse: orientation R^T, centre -R^T t.
+        - stereo mode: rectified cameras share orientation (identity); each
+          camera centre in the left rectified frame is -K^-1 P[:,3].
+
+        Centres are multiplied by effective_scale to match the hand markers.
         """
         stamp = self.get_clock().now().to_msg()
         transforms = []
         for name in self.camera_names:
-            R, t = self.extrinsics[name]
-            R_wc = R.T
-            center = (-R_wc @ t) * self.scale
+            if self.mode == "stereo":
+                c = self.calib[name]
+                center = -np.linalg.inv(c["k"]) @ c["p"][:, 3]
+                R_wc = np.eye(3)
+            else:
+                R, t = self.extrinsics[name]
+                R_wc = R.T
+                center = -R_wc @ t
+            center = center * self.effective_scale
             q = rotation_matrix_to_quaternion(R_wc)
 
             tf = TransformStamped()
@@ -291,16 +328,60 @@ class HandPoseNode(Node):
 
     # --------------------------------------------------------------- callbacks
     def _on_camera_info(self, msg, name):
-        if self.K[name] is not None:
-            return  # intrinsics are static; capture once
-        self.K[name] = np.array(msg.k, dtype=float).reshape(3, 3)
-        R, t = self.extrinsics[name]
-        self.P[name] = make_projection_matrix(self.K[name], R, t)
-        self.get_logger().info(f"Built projection matrix for {name}")
+        if self.calib[name] is not None:
+            return  # calibration is static; capture once
+        d = np.array(msg.d, dtype=float).ravel()
+        if d.size == 0:
+            d = np.zeros(5)  # "no distortion advertised" -> zeros
+        self.calib[name] = {
+            "k": np.array(msg.k, dtype=float).reshape(3, 3),
+            "d": d,
+            "r": np.array(msg.r, dtype=float).reshape(3, 3),
+            "p": np.array(msg.p, dtype=float).reshape(3, 4),
+            "model": (msg.distortion_model or "plumb_bob").lower(),
+        }
+        self.get_logger().info(f"Captured calibration for {name}")
+        if all(self.calib[n] is not None for n in self.camera_names):
+            self._on_calibration_ready()
+
+    def _on_calibration_ready(self):
+        """Both calibrations are in — set the triangulation mode + poses."""
+        if self.use_camera_info_extrinsics:
+            self.mode = "stereo"
+            self.effective_scale = 1.0  # rectified P is already metric
+            P1 = self.calib[self.camera_names[1]]["p"]
+            baseline = max(abs(P1[0, 3]), abs(P1[1, 3]))
+            if baseline <= 1e-9:
+                self.get_logger().warn(
+                    "use_camera_info_extrinsics=true, but camera_info P has no "
+                    "baseline (P[0,3]=P[1,3]=0): the cameras are not jointly "
+                    "stereo-calibrated. Triangulation will be degenerate."
+                )
+            else:
+                self.get_logger().info(
+                    "Triangulation mode: STEREO from camera_info "
+                    f"(baseline={baseline / P1[0, 0]:.4f} m); extrinsics.yaml ignored."
+                )
+        else:
+            self.mode = "extrinsics"
+            self.effective_scale = self.scale
+            for name in self.camera_names:
+                R, t = self.extrinsics[name]
+                self.P_ext[name] = make_projection_matrix(
+                    self.calib[name]["k"], R, t
+                )
+            self.get_logger().info(
+                "Triangulation mode: EXTRINSICS (extrinsics.yaml + raw K + DLT)."
+            )
+
+        self.ready = True
+        if self.publish_camera_pose:
+            self._broadcast_camera_poses()
+            self._publish_camera_markers()
 
     def _on_images(self, *msgs):
-        # All projection matrices must be ready before we can triangulate.
-        if any(self.P[name] is None for name in self.camera_names):
+        # Calibration on both cameras must arrive before we can triangulate.
+        if not self.ready:
             self.get_logger().warn(
                 "Waiting for camera_info on all cameras...",
                 throttle_duration_sec=5.0,
@@ -314,9 +395,19 @@ class HandPoseNode(Node):
         hands_2d = []
         for i, (name, msg) in enumerate(zip(self.camera_names, msgs)):
             frame_bgr = self._decode_to_bgr(msg)
+
+            # ===== HOTFIX(rotate-90): TEMPORARY =============================
+            # Un-rotate the rosbag image (see _HOTFIX_ROTATE at top of file).
+            # DELETE this block once the upstream publishes upright images.
+            if _HOTFIX_ROTATE is not None:
+                frame_bgr = cv2.rotate(frame_bgr, _HOTFIX_ROTATE)
+            # ===== END HOTFIX ===============================================
+
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            # Use the (possibly rotated) frame's own dimensions for scaling.
+            h, w = frame_bgr.shape[:2]
             hands = self._detect_hands(
-                self.detectors[i], frame_rgb, timestamp_ms, msg.width, msg.height
+                self.detectors[i], frame_rgb, timestamp_ms, w, h
             )
             if i == 1 and self.swap_handedness_camera1:
                 hands = {self._other_label(lbl): kp for lbl, kp in hands.items()}
@@ -370,15 +461,40 @@ class HandPoseNode(Node):
                 scores[label] = score
         return hands
 
+    def _undistort_points(self, name, pts):
+        """Undistort + rectify pixel points into the camera's rectified frame."""
+        c = self.calib[name]
+        src = np.ascontiguousarray(pts, dtype=np.float64).reshape(-1, 1, 2)
+        if c["model"] == "fisheye":
+            out = cv2.fisheye.undistortPoints(
+                src, c["k"], c["d"][:4].reshape(1, 4), R=c["r"], P=c["p"]
+            )
+        else:  # plumb_bob / rational_polynomial
+            out = cv2.undistortPoints(src, c["k"], c["d"], R=c["r"], P=c["p"])
+        return out.reshape(-1, 2)
+
     def _triangulate_hand(self, kp0, kp1):
-        """DLT-triangulate the 21 landmarks of one matched hand -> (21, 3)."""
-        P0 = self.P[self.camera_names[0]]
-        P1 = self.P[self.camera_names[1]]
+        """Triangulate one matched hand's 21 landmarks -> (21, 3) (NaN if missing)."""
+        n0, n1 = self.camera_names
         points_3d = np.full((N_LANDMARKS, 3), np.nan)
-        for p in range(N_LANDMARKS):
-            if np.isnan(kp0[p, 0]) or np.isnan(kp1[p, 0]):
-                continue
-            points_3d[p] = dlt(P0, P1, kp0[p], kp1[p])
+        valid = ~(np.isnan(kp0[:, 0]) | np.isnan(kp1[:, 0]))
+        if not valid.any():
+            return points_3d
+        idx = np.where(valid)[0]
+
+        if self.mode == "stereo":
+            # undistort/rectify with camera_info K/D/R/P, then triangulate with
+            # the two P matrices (which carry the baseline).
+            u0 = self._undistort_points(n0, kp0[idx])
+            u1 = self._undistort_points(n1, kp1[idx])
+            X = cv2.triangulatePoints(
+                self.calib[n0]["p"], self.calib[n1]["p"], u0.T, u1.T
+            )  # 4xN homogeneous
+            points_3d[idx] = (X[:3] / X[3]).T
+        else:
+            P0, P1 = self.P_ext[n0], self.P_ext[n1]
+            for p in idx:
+                points_3d[p] = dlt(P0, P1, kp0[p], kp1[p])
         return points_3d
 
     def _decode_to_bgr(self, msg):
@@ -452,7 +568,7 @@ class HandPoseNode(Node):
 
             if points_3d is not None:
                 def to_point(idx, _p3d=points_3d):
-                    x, y, z = _p3d[idx] * self.scale
+                    x, y, z = _p3d[idx] * self.effective_scale
                     return Point(x=float(x), y=float(y), z=float(z))
 
                 valid = ~np.isnan(points_3d[:, 0])
