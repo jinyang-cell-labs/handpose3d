@@ -17,4 +17,7 @@ camera_publisher_node:
     output_size: 720
     capture_width: 1280
     capture_height: 720
+    # Video replay: loop at EOF, and a speed multiplier (>1 faster, <1 slower).
+    # The base rate is the clip's native FPS; both are ignored for live cameras.
     loop: true
+    replay_speed: 1.0

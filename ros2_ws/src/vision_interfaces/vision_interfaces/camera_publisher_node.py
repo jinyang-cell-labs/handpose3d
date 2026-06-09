@@ -60,6 +60,10 @@ class CameraPublisherNode(Node):
         self.declare_parameter("capture_height", 720)
         # Loop video files when they reach EOF (no effect for live cameras).
         self.declare_parameter("loop", True)
+        # Playback speed multiplier for video mode: >1 faster, <1 slower. The
+        # base rate is the video's native FPS (falling back to frame_rate);
+        # ignored for live cameras.
+        self.declare_parameter("replay_speed", 1.0)
 
         self.source_type = self.get_parameter("source_type").value
         video_paths = list(self.get_parameter("video_paths").value)
@@ -72,6 +76,12 @@ class CameraPublisherNode(Node):
         self.capture_width = int(self.get_parameter("capture_width").value)
         self.capture_height = int(self.get_parameter("capture_height").value)
         self.loop = bool(self.get_parameter("loop").value)
+        self.replay_speed = float(self.get_parameter("replay_speed").value)
+        if self.replay_speed <= 0.0:
+            self.get_logger().warn(
+                f"replay_speed must be > 0, got {self.replay_speed}; using 1.0"
+            )
+            self.replay_speed = 1.0
 
         # Pick the per-camera source list according to source_type.
         if self.source_type == "video":
@@ -118,10 +128,24 @@ class CameraPublisherNode(Node):
             cim.loadCameraInfo()
             self.camera_info_managers.append(cim)
 
-        self.timer = self.create_timer(1.0 / frame_rate, self._tick)
+        # Determine the publish rate. For video mode the base is the clip's
+        # native FPS (so replay_speed=1.0 plays at real time), scaled by
+        # replay_speed; live cameras just use frame_rate.
+        if self.source_type == "video":
+            native_fps = self.captures[0].get(cv2.CAP_PROP_FPS)
+            base_fps = native_fps if native_fps and native_fps > 0 else frame_rate
+            effective_rate = base_fps * self.replay_speed
+            self.get_logger().info(
+                f"Video playback: native {base_fps:.1f} fps x{self.replay_speed} "
+                f"= {effective_rate:.1f} fps (loop={self.loop})"
+            )
+        else:
+            effective_rate = frame_rate
+
+        self.timer = self.create_timer(1.0 / effective_rate, self._tick)
         self.get_logger().info(
             f"Publishing {n} camera stream(s) {self.camera_names} "
-            f"from {self.source_type} sources at {frame_rate:.1f} fps"
+            f"from {self.source_type} sources at {effective_rate:.1f} fps"
         )
 
     def _open_capture(self, source):

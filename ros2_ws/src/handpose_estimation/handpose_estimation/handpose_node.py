@@ -281,15 +281,19 @@ class HandPoseNode(Node):
 
     def _publish_annotated(self, name, frame_bgr, kpts, header):
         h, w = frame_bgr.shape[:2]
-        pts = [
-            (int(round(kpts[p, 0])), int(round(kpts[p, 1])))
+        # Build pixel points only for detected landmarks. When no hand is found
+        # (e.g. the first frames after a video loop), kpts is all-NaN — skip
+        # those so we never feed NaN to int()/cv2.
+        pts = {
+            p: (int(round(kpts[p, 0])), int(round(kpts[p, 1])))
             for p in range(N_LANDMARKS)
-        ]
-        if not np.isnan(kpts[0, 0]):
-            for a, b in HAND_CONNECTIONS:
+            if not np.isnan(kpts[p, 0])
+        }
+        for a, b in HAND_CONNECTIONS:
+            if a in pts and b in pts:
                 cv2.line(frame_bgr, pts[a], pts[b], (255, 255, 255), 2)
-            for p in pts:
-                cv2.circle(frame_bgr, p, 3, (0, 0, 255), -1)
+        for p in pts.values():
+            cv2.circle(frame_bgr, p, 3, (0, 0, 255), -1)
 
         img = Image()
         img.header = header
