@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "handpose_node = handpose_estimation.handpose_node:main",
+            "stereo_depth_node = handpose_estimation.stereo_depth_node:main",
         ],
     },
 )
