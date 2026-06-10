@@ -26,3 +26,67 @@ handpose_node:
     # Publish each camera's pose (from extrinsics) as TF + a frustum marker.
     publish_camera_pose: true
     camera_marker_size: 0.08
+
+    # ===================================================================== #
+    #  Wrist-pose pipeline (docs/estimation_guide_v1.md)                    #
+    #  Stages: A1 weighted DLT -> A2 reproj residual -> B1 reachability ->  #
+    #          C Procrustes -> B2 RANSAC -> D Kalman -> E One-Euro          #
+    #  All lengths below are METRES: triangulated joints are converted to   #
+    #  metres via effective_scale before the pipeline runs, so thresholds   #
+    #  are physical in both triangulation modes.                            #
+    # ===================================================================== #
+    nominal_fps: 30.0                  # fallback dt when timing is missing
+    template_file: "/workspace/ros2_ws/src/handpose_estimation/config/hand_template.yaml"
+    publish_fitted_skeleton: true      # show R*template+t skeleton in RViz
+
+    # Per-view weighting source. The Tasks-API HandLandmarker does NOT
+    # populate per-landmark visibility/presence (always 0; MediaPipe issue
+    # #5212), so per-joint weights are synthesised:
+    #   "uniform"      -> all weights 1 (plain DLT)
+    #   "handedness"   -> weight = handedness score (per hand, per view)
+    #   "reprojection" -> weight = 1/(1+resid/resid_scale) from Stage A2
+    #   "product"      -> handedness * reprojection (recommended)
+    weight_source: "product"
+    reproj_resid_scale: 2.0            # pixels; larger -> gentler weighting
+
+    # ---------------- Stage A1: weighted DLT ---------------------------- #
+    # When true, the per-view handedness scores scale the DLT rows.
+    weighted_dlt.enabled: true
+
+    # ---------------- Stage A2: reprojection residual ------------------- #
+    reprojection_residual.enabled: true
+    reprojection_residual.publish_debug: false   # log per-joint pixel error
+
+    # ---------------- Stage B1: reachability shell ---------------------- #
+    # Shoulder anchors live in hand_template.yaml (shell: section).
+    reachability_gate.enabled: false
+    reachability_gate.d_min: 0.10      # m; closer than this to the shoulder -> reject
+    reachability_gate.d_max: 0.85      # m; ~0.66 m avg adult reach + margin
+    reachability_gate.behind_margin: 0.10   # m; reject points behind the head
+    reachability_gate.forward_axis: [0.0, 0.0, 1.0]   # cameras look down +z
+
+    # ---------------- Stage C: Procrustes / Kabsch ---------------------- #
+    procrustes.enabled: true
+    procrustes.min_joints: 6           # min usable joints to attempt a fit
+
+    # ---------------- Stage B2: RANSAC ---------------------------------- #
+    ransac.enabled: true
+    ransac.iterations: 50
+    ransac.sample_size: 4              # 3 minimum; 4 more stable
+    # 3D inlier residual threshold (m). Rule of thumb: a few x triangulation
+    # noise, a fraction of hand span (~0.18 m). Widen if too strict.
+    ransac.inlier_thresh: 0.02
+
+    # ---------------- Stage D: Kalman ------------------------------------ #
+    kalman.enabled: true
+    kalman.process_noise_pos: 10.0     # sigma_a^2 (m/s^2)^2; larger -> responsive
+    kalman.measurement_noise_pos: 0.0006   # m^2 (~2.5 cm std); larger -> smoother
+    kalman.gate_threshold: 11.345      # chi-square(3 DoF, 0.99)
+    kalman.orientation_lpf: 0.5        # SLERP step toward the measurement
+    kalman.max_coast_frames: 10        # predict-only frames before track reset
+
+    # ---------------- Stage E: One-Euro ---------------------------------- #
+    one_euro.enabled: true
+    one_euro.min_cutoff: 1.0           # Hz; lower -> less jitter when still
+    one_euro.beta: 0.007               # higher -> less lag on fast motion
+    one_euro.d_cutoff: 1.0             # Hz; derivative cutoff (rarely tuned)

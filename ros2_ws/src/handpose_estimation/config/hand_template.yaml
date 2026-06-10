@@ -1,0 +1,60 @@
+# hand_template.yaml -- canonical MediaPipe 21-landmark hand template + the
+# reachability shell (Stage B1). Loaded by handpose_node via the
+# `template_file` parameter (non-ROS YAML, mirroring the extrinsics_file
+# pattern), so calibration artefacts version independently of tuning params.
+#
+# Template frame: wrist-local, METRES. +x: wrist -> middle MCP, +y: toward the
+# thumb, +z: palm dorsal normal. Flat hand, fingers extended, thumb abducted.
+#
+# Sources for the default geometry:
+#   * Phalanx lengths: Buryanov & Kotiuk, "Proportions of Hand Segments",
+#     Int. J. Morphol. 28(3):755-758 (2010), DOI 10.4067/S0717-95022010000300015.
+#     index PP 39.78, MP 22.38, DP 15.82; middle PP 44.63, MP 26.33, DP 17.40;
+#     ring PP 41.37, MP 25.65, DP 17.30; little PP 32.74, MP 18.11, DP 15.96 (mm).
+#     (Reproduced via Sarac 2017, arXiv:2003.11598 Tab 2.1; verify vs original.)
+#   * Metacarpal/thumb lengths & palm breadth: typical adult anatomy
+#     (~MC II 68, III 65, IV 58, V 53, thumb MC 46 mm; breadth ~85 mm).
+#     TODO: replace with the original Buryanov Table I metacarpal/thumb values
+#           or your own measured values for best absolute accuracy.
+#
+# Layout convention (RIGHT hand). For a LEFT hand the node mirrors y -> -y.
+
+template:
+  units: "m"
+  handedness_reference: "Right"   # node mirrors for Left
+  # 21 rows, MediaPipe order:
+  # 0 WRIST, 1-4 THUMB(CMC,MCP,IP,TIP), 5-8 INDEX(MCP,PIP,DIP,TIP),
+  # 9-12 MIDDLE, 13-16 RING, 17-20 PINKY
+  landmarks:
+    - [0.000,  0.000, 0.000]   # 0  WRIST
+    - [0.030,  0.030, 0.000]   # 1  THUMB_CMC
+    - [0.055,  0.050, 0.005]   # 2  THUMB_MCP
+    - [0.075,  0.062, 0.008]   # 3  THUMB_IP
+    - [0.090,  0.070, 0.010]   # 4  THUMB_TIP
+    - [0.068,  0.020, 0.000]   # 5  INDEX_MCP
+    - [0.108,  0.022, 0.000]   # 6  INDEX_PIP
+    - [0.130,  0.022, 0.000]   # 7  INDEX_DIP
+    - [0.146,  0.022, 0.000]   # 8  INDEX_TIP
+    - [0.065,  0.000, 0.000]   # 9  MIDDLE_MCP
+    - [0.109,  0.000, 0.000]   # 10 MIDDLE_PIP
+    - [0.135,  0.000, 0.000]   # 11 MIDDLE_DIP
+    - [0.153,  0.000, 0.000]   # 12 MIDDLE_TIP
+    - [0.058, -0.020, 0.000]   # 13 RING_MCP
+    - [0.099, -0.021, 0.000]   # 14 RING_PIP
+    - [0.125, -0.021, 0.000]   # 15 RING_DIP
+    - [0.142, -0.021, 0.000]   # 16 RING_TIP
+    - [0.053, -0.040, 0.000]   # 17 PINKY_MCP
+    - [0.086, -0.042, 0.000]   # 18 PINKY_PIP
+    - [0.104, -0.042, 0.000]   # 19 PINKY_DIP
+    - [0.120, -0.042, 0.000]   # 20 PINKY_TIP
+
+# Reachability shell (Stage B1) -- shoulder anchors relative to the world
+# frame origin, in METRES. With use_camera_info_extrinsics: true the world
+# frame is the left rectified camera's optical frame: x right, y DOWN,
+# z forward — so shoulders sit at positive y, below the head-mounted rig.
+# TODO: set these from your head-rig geometry plus a short reach calibration
+# (arm fully extended / fully retracted; see the package README).
+shell:
+  units: "m"
+  shoulder_left:  [-0.18, 0.25, 0.0]
+  shoulder_right: [ 0.18, 0.25, 0.0]

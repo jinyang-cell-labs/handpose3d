@@ -15,6 +15,20 @@ come from the camera_info topics, stereo extrinsics from the node's config).
 The 3D skeleton is published as a ``visualization_msgs/MarkerArray`` in the
 world frame for visualization in RViz. The annotated 2D views are optionally
 republished as ``<name>/handpose/annotated``.
+
+On top of the raw per-joint triangulation, a model-based wrist-pose pipeline
+(docs/estimation_guide_v1.md) emits one temporally smooth 6-DoF pose per hand
+as ``geometry_msgs/PoseStamped`` on ``handpose/wrist_left`` and
+``handpose/wrist_right``:
+
+    A1 confidence-weighted DLT -> A2 reprojection residuals ->
+    B1 reachability gate -> C Procrustes/Kabsch fit (B2 RANSAC-wrapped) ->
+    D constant-velocity Kalman + SLERP orientation LPF -> E One-Euro polish
+
+Each stage has an ``*.enabled`` parameter so the pipeline can be brought up
+incrementally. The pipeline runs in METRES (triangulated world units are
+multiplied by ``effective_scale`` first), so all thresholds are physical in
+both triangulation modes.
 """
 
 import os
@@ -24,7 +38,7 @@ import numpy as np
 import rclpy
 import yaml
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Point, TransformStamped
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
@@ -38,9 +52,13 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
 from handpose_estimation.triangulation import (
-    dlt,
     make_projection_matrix,
     rotation_matrix_to_quaternion,
+    triangulate_point,
+)
+from handpose_estimation.wrist_pose_pipeline import (
+    ReachabilityShell,
+    WristTracker,
 )
 
 # Hand skeleton connections (21 landmarks), formerly mp.solutions.hands.HAND_CONNECTIONS
@@ -66,6 +84,13 @@ HAND_COLORS = {
 HAND_BGR = {"Left": (255, 150, 50), "Right": (50, 150, 255)}
 # Stable (joints, bones) marker ids per hand so updates replace in place.
 HAND_MARKER_IDS = {"Left": (0, 1), "Right": (2, 3)}
+# Marker ids for the fitted-template skeleton (R*template+t, Stage C output),
+# published alongside the raw joints for A/B comparison in RViz.
+FITTED_MARKER_IDS = {"Left": (4, 5), "Right": (6, 7)}
+FITTED_COLORS = {
+    "Left": ColorRGBA(r=0.5, g=0.9, b=0.5, a=0.8),   # green-ish
+    "Right": ColorRGBA(r=0.9, g=0.9, b=0.3, a=0.8),  # yellow-ish
+}
 
 # ===== HOTFIX(rotate-90): TEMPORARY =========================================
 # The current rosbag publishes a 90deg-rotated image (hardware limitation).
@@ -139,6 +164,11 @@ class HandPoseNode(Node):
             self.get_parameter("camera_marker_size").value
         )
 
+        # --- wrist-pose pipeline parameters ----------------------------------
+        self._declare_pipeline_params()
+        self._load_template_and_shell()
+        self._build_trackers()
+
         # --- mediapipe detectors (one per camera so VIDEO timestamps stay
         # independent) ------------------------------------------------------
         if not os.path.exists(self.model_path):
@@ -189,6 +219,11 @@ class HandPoseNode(Node):
         self.sync.registerCallback(self._on_images)
 
         self.marker_pub = self.create_publisher(MarkerArray, "handpose/markers", 10)
+        # 6-DoF wrist pose per hand (wrist-pose pipeline output).
+        self.wrist_pubs = {
+            "Left": self.create_publisher(PoseStamped, "handpose/wrist_left", 10),
+            "Right": self.create_publisher(PoseStamped, "handpose/wrist_right", 10),
+        }
         self.annotated_pubs = {}
         if self.publish_annotated:
             for name in self.camera_names:
@@ -251,6 +286,106 @@ class HandPoseNode(Node):
             t = np.array(cameras[name]["translation"], dtype=float).reshape(3)
             ext[name] = (R, t)
         return ext
+
+    # ------------------------------------------------- wrist-pose pipeline setup
+    def _declare_pipeline_params(self):
+        """Declare and read the wrist-pose pipeline parameters.
+
+        All lengths are metres (the pipeline runs on metric joints:
+        triangulated world units * effective_scale).
+        """
+        defaults = {
+            "nominal_fps": 30.0,
+            "template_file": "/workspace/ros2_ws/src/handpose_estimation/"
+                             "config/hand_template.yaml",
+            "publish_fitted_skeleton": True,
+            "weight_source": "product",
+            "reproj_resid_scale": 2.0,
+            "weighted_dlt.enabled": True,
+            "reprojection_residual.enabled": True,
+            "reprojection_residual.publish_debug": False,
+            "reachability_gate.enabled": True,
+            "reachability_gate.d_min": 0.10,
+            "reachability_gate.d_max": 0.85,
+            "reachability_gate.behind_margin": 0.10,
+            "reachability_gate.forward_axis": [0.0, 0.0, 1.0],
+            "procrustes.enabled": True,
+            "procrustes.min_joints": 6,
+            "ransac.enabled": True,
+            "ransac.iterations": 50,
+            "ransac.sample_size": 4,
+            "ransac.inlier_thresh": 0.02,
+            "kalman.enabled": True,
+            "kalman.process_noise_pos": 10.0,
+            "kalman.measurement_noise_pos": 0.0006,
+            "kalman.gate_threshold": 11.345,
+            "kalman.orientation_lpf": 0.5,
+            "kalman.max_coast_frames": 10,
+            "one_euro.enabled": True,
+            "one_euro.min_cutoff": 1.0,
+            "one_euro.beta": 0.007,
+            "one_euro.d_cutoff": 1.0,
+        }
+        for name, val in defaults.items():
+            self.declare_parameter(name, val)
+        self.pipe_params = {n: self.get_parameter(n).value for n in defaults}
+        self.pipe_flags = {
+            "weighted_dlt": bool(self.pipe_params["weighted_dlt.enabled"]),
+            "reprojection_residual": bool(
+                self.pipe_params["reprojection_residual.enabled"]
+            ),
+            "reachability_gate": bool(
+                self.pipe_params["reachability_gate.enabled"]
+            ),
+            "procrustes": bool(self.pipe_params["procrustes.enabled"]),
+            "ransac": bool(self.pipe_params["ransac.enabled"]),
+            "kalman": bool(self.pipe_params["kalman.enabled"]),
+            "one_euro": bool(self.pipe_params["one_euro.enabled"]),
+        }
+        self.publish_fitted_skeleton = bool(
+            self.pipe_params["publish_fitted_skeleton"]
+        )
+
+    def _load_template_and_shell(self):
+        """Load the canonical 21-landmark template + reachability shell (m)."""
+        path = self.pipe_params["template_file"]
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Hand template file not found: {path}")
+        with open(path, "r") as f:
+            doc = yaml.safe_load(f)
+        self.hand_template = np.asarray(
+            doc["template"]["landmarks"], dtype=float
+        )
+        if self.hand_template.shape != (N_LANDMARKS, 3):
+            raise ValueError(
+                f"hand template must be ({N_LANDMARKS}, 3), "
+                f"got {self.hand_template.shape}"
+            )
+        shell = doc.get("shell", {})
+        self.reach_shell = ReachabilityShell(
+            shoulder_left=shell.get("shoulder_left", [-0.18, 0.25, 0.0]),
+            shoulder_right=shell.get("shoulder_right", [0.18, 0.25, 0.0]),
+            d_min=self.pipe_params["reachability_gate.d_min"],
+            d_max=self.pipe_params["reachability_gate.d_max"],
+            forward_axis=self.pipe_params["reachability_gate.forward_axis"],
+            behind_margin=self.pipe_params["reachability_gate.behind_margin"],
+        )
+
+    def _build_trackers(self):
+        """One WristTracker per hand; the left hand gets a y-mirrored template."""
+        self.trackers = {}
+        for i, hand in enumerate(HAND_LABELS):
+            tmpl = self.hand_template.copy()
+            if hand == "Left":
+                tmpl[:, 1] *= -1.0  # template is right-handed; mirror y
+            self.trackers[hand] = WristTracker(
+                handedness=hand,
+                template=tmpl,
+                flags=self.pipe_flags,
+                params=self.pipe_params,
+                shell=self.reach_shell,
+                rng_seed=i,
+            )
 
     # ------------------------------------------------------------ camera poses
     def _broadcast_camera_poses(self):
@@ -393,6 +528,7 @@ class HandPoseNode(Node):
 
         # Per camera, detect all hands keyed by handedness: {label: (21, 2)}.
         hands_2d = []
+        scores_2d = []
         for i, (name, msg) in enumerate(zip(self.camera_names, msgs)):
             frame_bgr = self._decode_to_bgr(msg)
 
@@ -406,24 +542,68 @@ class HandPoseNode(Node):
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             # Use the (possibly rotated) frame's own dimensions for scaling.
             h, w = frame_bgr.shape[:2]
-            hands = self._detect_hands(
+            hands, scores = self._detect_hands(
                 self.detectors[i], frame_rgb, timestamp_ms, w, h
             )
             if i == 1 and self.swap_handedness_camera1:
                 hands = {self._other_label(lbl): kp for lbl, kp in hands.items()}
+                scores = {self._other_label(lbl): s for lbl, s in scores.items()}
             hands_2d.append(hands)
+            scores_2d.append(scores)
 
             if self.publish_annotated and name in self.annotated_pubs:
                 self._publish_annotated(name, frame_bgr.copy(), hands, msg.header)
 
-        # Match hands across cameras by handedness label, triangulate each.
+        # Match hands across cameras by handedness label, triangulate each
+        # (Stage A1 weighted DLT + Stage A2 reprojection residuals).
+        stamp = msgs[0].header.stamp
+        stamp_sec = stamp.sec + stamp.nanosec * 1e-9
         points_3d_by_hand = {}
+        fitted_by_hand = {}
         for label in HAND_LABELS:
             kp0 = hands_2d[0].get(label)
             kp1 = hands_2d[1].get(label)
             if kp0 is None or kp1 is None:
+                # Hand missing in a view: let the tracker coast (Stage D).
+                res = self.trackers[label].update(
+                    stamp_sec,
+                    np.full((N_LANDMARKS, 3), np.nan),
+                    np.zeros(N_LANDMARKS),
+                    0.0,
+                )
+                self._publish_wrist_pose(label, res, stamp)
                 continue
-            points_3d_by_hand[label] = self._triangulate_hand(kp0, kp1)
+
+            view_scores = [scores_2d[0][label], scores_2d[1][label]]
+            points_3d, residuals = self._triangulate_hand(kp0, kp1, view_scores)
+            points_3d_by_hand[label] = points_3d
+
+            # Run the wrist-pose pipeline in metres.
+            joints_m = points_3d * self.effective_scale
+            weights = self._per_joint_weights(view_scores, residuals)
+            agg_conf = float(np.clip(np.mean(view_scores), 0.5, 1.0))
+            res = self.trackers[label].update(
+                stamp_sec, joints_m, weights, agg_conf
+            )
+            self._publish_wrist_pose(label, res, stamp)
+
+            if self.pipe_params["reprojection_residual.publish_debug"]:
+                self.get_logger().info(
+                    f"{label} reproj resid px: mean={np.nanmean(residuals):.2f} "
+                    f"max={np.nanmax(residuals):.2f}",
+                    throttle_duration_sec=1.0,
+                )
+
+            # Fitted-template skeleton (R*template+t, metres) for RViz A/B.
+            if (
+                self.publish_fitted_skeleton
+                and res is not None
+                and res["valid"]
+                and self.trackers[label].last_fit is not None
+            ):
+                R, t = self.trackers[label].last_fit
+                tmpl = self.trackers[label].template
+                fitted_by_hand[label] = (R @ tmpl.T).T + t
 
         # Periodic visibility into handedness agreement across the two views.
         self.get_logger().info(
@@ -432,17 +612,20 @@ class HandPoseNode(Node):
             throttle_duration_sec=5.0,
         )
 
-        self._publish_markers(points_3d_by_hand, msgs[0].header.stamp)
+        self._publish_markers(points_3d_by_hand, stamp, fitted_by_hand)
 
     @staticmethod
     def _other_label(label):
         return "Right" if label == "Left" else "Left"
 
     def _detect_hands(self, detector, frame_rgb, timestamp_ms, width, height):
-        """Run the landmarker; return {handedness_label: (21, 2) pixel array}.
+        """Run the landmarker; return ({label: (21, 2) pixels}, {label: score}).
 
-        If the same label is reported twice (rare), the higher-confidence hand
-        wins so each of Left/Right maps to a single detection.
+        The score is MediaPipe's handedness confidence (>= 0.5) — the only
+        per-hand confidence the Tasks API exposes (per-landmark visibility/
+        presence are never populated; MediaPipe issue #5212). If the same
+        label is reported twice (rare), the higher-confidence hand wins so
+        each of Left/Right maps to a single detection.
         """
         mp_image = mp.Image(
             image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame_rgb)
@@ -459,7 +642,7 @@ class HandPoseNode(Node):
                     [[lm.x * width, lm.y * height] for lm in lm_list], dtype=float
                 )
                 scores[label] = score
-        return hands
+        return hands, scores
 
     def _undistort_points(self, name, pts):
         """Undistort + rectify pixel points into the camera's rectified frame."""
@@ -473,29 +656,77 @@ class HandPoseNode(Node):
             out = cv2.undistortPoints(src, c["k"], c["d"], R=c["r"], P=c["p"])
         return out.reshape(-1, 2)
 
-    def _triangulate_hand(self, kp0, kp1):
-        """Triangulate one matched hand's 21 landmarks -> (21, 3) (NaN if missing)."""
+    def _triangulate_hand(self, kp0, kp1, view_scores=None):
+        """Triangulate one matched hand's 21 landmarks via (weighted) DLT.
+
+        Stage A1: per-view weights (the handedness scores) scale each camera's
+        DLT rows when `weighted_dlt.enabled` is true.
+        Stage A2: each joint's mean reprojection residual (pixels) is returned
+        as a per-joint trust signal.
+
+        - stereo mode: points are undistorted/rectified with camera_info
+          K/D/R/P first, then triangulated against the two rectified P
+          matrices (which carry the baseline).
+        - extrinsics mode: raw pixels against P = K [R|t] from extrinsics.yaml.
+
+        Returns:
+            points_3d: (21, 3) world-unit points (NaN where missing).
+            residuals: (21,) mean reprojection residual in pixels (NaN where
+                missing).
+        """
         n0, n1 = self.camera_names
         points_3d = np.full((N_LANDMARKS, 3), np.nan)
+        residuals = np.full(N_LANDMARKS, np.nan)
         valid = ~(np.isnan(kp0[:, 0]) | np.isnan(kp1[:, 0]))
         if not valid.any():
-            return points_3d
+            return points_3d, residuals
         idx = np.where(valid)[0]
 
         if self.mode == "stereo":
-            # undistort/rectify with camera_info K/D/R/P, then triangulate with
-            # the two P matrices (which carry the baseline).
-            u0 = self._undistort_points(n0, kp0[idx])
-            u1 = self._undistort_points(n1, kp1[idx])
-            X = cv2.triangulatePoints(
-                self.calib[n0]["p"], self.calib[n1]["p"], u0.T, u1.T
-            )  # 4xN homogeneous
-            points_3d[idx] = (X[:3] / X[3]).T
+            pts0 = np.full((N_LANDMARKS, 2), np.nan)
+            pts1 = np.full((N_LANDMARKS, 2), np.nan)
+            pts0[idx] = self._undistort_points(n0, kp0[idx])
+            pts1[idx] = self._undistort_points(n1, kp1[idx])
+            P0, P1 = self.calib[n0]["p"], self.calib[n1]["p"]
         else:
+            pts0, pts1 = kp0, kp1
             P0, P1 = self.P_ext[n0], self.P_ext[n1]
-            for p in idx:
-                points_3d[p] = dlt(P0, P1, kp0[p], kp1[p])
-        return points_3d
+
+        weights = None
+        if self.pipe_flags["weighted_dlt"] and view_scores is not None:
+            weights = np.asarray(view_scores, dtype=float)
+
+        for p in idx:
+            X, mean_resid, _ = triangulate_point(
+                [P0, P1], [pts0[p], pts1[p]], weights
+            )
+            points_3d[p] = X
+            residuals[p] = mean_resid
+        return points_3d, residuals
+
+    def _per_joint_weights(self, view_scores, residuals):
+        """Synthesise per-joint weights (Stage A1/A2 outputs -> Stage C input).
+
+        The Tasks-API HandLandmarker provides no per-landmark confidence
+        (visibility/presence always 0, MediaPipe issue #5212), so weights are
+        formed per the `weight_source` parameter from the per-hand handedness
+        score and/or the per-joint reprojection residual.
+        """
+        src = self.pipe_params["weight_source"]
+        hand_w = float(np.clip(np.mean(view_scores), 0.5, 1.0))
+        if self.pipe_flags["reprojection_residual"]:
+            rs = float(self.pipe_params["reproj_resid_scale"])
+            resid = np.nan_to_num(residuals, nan=1e6)
+            reproj_w = 1.0 / (1.0 + resid / rs)  # per joint, in (0,1]
+        else:
+            reproj_w = np.ones(N_LANDMARKS)
+        if src == "uniform":
+            return np.ones(N_LANDMARKS)
+        if src == "handedness":
+            return np.full(N_LANDMARKS, hand_w)
+        if src == "reprojection":
+            return reproj_w
+        return hand_w * reproj_w  # "product" (default)
 
     def _decode_to_bgr(self, msg):
         """Decode a sensor_msgs/Image to a contiguous bgr8 ndarray.
@@ -529,13 +760,39 @@ class HandPoseNode(Node):
         return np.ascontiguousarray(bgr)
 
     # ------------------------------------------------------------- publishing
-    def _publish_markers(self, points_3d_by_hand, stamp):
+    def _publish_wrist_pose(self, label, res, stamp):
+        """Publish one hand's 6-DoF wrist pose (metres, world frame).
+
+        ``res`` is the WristTracker output; None (track lost/reset) publishes
+        nothing, a coasting result (valid=False) still publishes the
+        prediction so downstream consumers bridge short dropouts.
+        """
+        if res is None:
+            return
+        msg = PoseStamped()
+        msg.header.frame_id = self.world_frame
+        msg.header.stamp = stamp
+        p, q = res["pos"], res["quat"]
+        msg.pose.position.x = float(p[0])
+        msg.pose.position.y = float(p[1])
+        msg.pose.position.z = float(p[2])
+        msg.pose.orientation.x = float(q[0])
+        msg.pose.orientation.y = float(q[1])
+        msg.pose.orientation.z = float(q[2])
+        msg.pose.orientation.w = float(q[3])
+        self.wrist_pubs[label].publish(msg)
+
+    def _publish_markers(self, points_3d_by_hand, stamp, fitted_by_hand=None):
         """Publish a joints + bones marker per hand.
 
         Both Left and Right are always published (with stable ids); a hand that
         is absent this frame is published with no points, which clears its
-        previous skeleton in RViz instead of leaving it stale.
+        previous skeleton in RViz instead of leaving it stale. When the
+        wrist-pose pipeline produced a rigid fit, the fitted template skeleton
+        (R*template+t, already in metres) is published alongside the raw
+        joints for A/B comparison.
         """
+        fitted_by_hand = fitted_by_hand or {}
         marker_array = MarkerArray()
         for label in HAND_LABELS:
             points_3d = points_3d_by_hand.get(label)
@@ -582,6 +839,52 @@ class HandPoseNode(Node):
 
             marker_array.markers.append(joints)
             marker_array.markers.append(bones)
+
+            # Fitted-template skeleton (wrist-pose pipeline Stage C output).
+            # Positions are already metric — no effective_scale multiply.
+            if self.publish_fitted_skeleton:
+                fitted = fitted_by_hand.get(label)
+                fcolor = FITTED_COLORS[label]
+                fjoint_id, fbone_id = FITTED_MARKER_IDS[label]
+
+                fjoints = Marker()
+                fjoints.header.frame_id = self.world_frame
+                fjoints.header.stamp = stamp
+                fjoints.ns = f"hand_{label.lower()}_fitted_joints"
+                fjoints.id = fjoint_id
+                fjoints.type = Marker.SPHERE_LIST
+                fjoints.action = Marker.ADD
+                fjoints.scale.x = fjoints.scale.y = fjoints.scale.z = (
+                    self.joint_size * 0.7
+                )
+                fjoints.color = fcolor
+                fjoints.lifetime = Duration(sec=0, nanosec=200_000_000)
+                fjoints.pose.orientation.w = 1.0
+
+                fbones = Marker()
+                fbones.header.frame_id = self.world_frame
+                fbones.header.stamp = stamp
+                fbones.ns = f"hand_{label.lower()}_fitted_bones"
+                fbones.id = fbone_id
+                fbones.type = Marker.LINE_LIST
+                fbones.action = Marker.ADD
+                fbones.scale.x = self.line_width * 0.7
+                fbones.color = fcolor
+                fbones.lifetime = Duration(sec=0, nanosec=200_000_000)
+                fbones.pose.orientation.w = 1.0
+
+                if fitted is not None:
+                    fpts = [
+                        Point(x=float(x), y=float(y), z=float(z))
+                        for x, y, z in fitted
+                    ]
+                    fjoints.points.extend(fpts)
+                    for a, b in HAND_CONNECTIONS:
+                        fbones.points.append(fpts[a])
+                        fbones.points.append(fpts[b])
+
+                marker_array.markers.append(fjoints)
+                marker_array.markers.append(fbones)
         self.marker_pub.publish(marker_array)
 
     def _publish_annotated(self, name, frame_bgr, hands, header):
