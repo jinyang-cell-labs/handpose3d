@@ -1,0 +1,90 @@
+handpose_node_v2:
+  ros__parameters:
+    camera_names: ["camera0", "camera1"]
+    # Model + template + extrinsics are shared with v1 (single source of truth).
+    model_path: "/workspace/ros2_ws/src/handpose_estimation/models/hand_landmarker.task"
+    extrinsics_file: "/workspace/ros2_ws/src/handpose_estimation/config/extrinsics.yaml"
+    # true:  fit against the camera_info stereo calibration (undistort +
+    #        rectify with K/D/R/P, baseline from P). extrinsics.yaml is ignored.
+    # false: use extrinsics.yaml + raw K (no distortion correction).
+    use_camera_info_extrinsics: true
+    world_frame: "world"
+    num_hands: 2
+    # Set true if the two views are mirror-flipped relative to each other, so
+    # MediaPipe reports opposite handedness for the same physical hand.
+    swap_handedness_camera1: false
+    min_hand_detection_confidence: 0.5
+    min_hand_presence_confidence: 0.5
+    min_tracking_confidence: 0.5
+    # ApproximateTimeSynchronizer tolerance for pairing the two views.
+    sync_slop: 0.05
+    sync_queue_size: 10
+    # Calibration world units -> metres for RViz-friendly marker sizing.
+    scale: 0.05
+    joint_size: 0.02
+    line_width: 0.01
+    publish_annotated: true
+    # Publish each camera's pose (from extrinsics) as TF + a frustum marker.
+    publish_camera_pose: true
+    camera_marker_size: 0.08
+
+    # ===================================================================== #
+    #  Model-fit pipeline (v2)                                              #
+    #  Stages: A+C model fit (LM on 2D reprojection error, B2 RANSAC in px) #
+    #          -> B1 reachability -> D Kalman -> E One-Euro                 #
+    #  Lengths are METRES unless suffixed _px (the fit residual domain is   #
+    #  pixels). B1/D/E parameters are identical to v1.                      #
+    # ===================================================================== #
+    nominal_fps: 30.0                  # fallback dt when timing is missing
+    template_file: "/workspace/ros2_ws/src/handpose_estimation/config/hand_template.yaml"
+    publish_fitted_skeleton: true      # show R*template+t skeleton in RViz
+    # Keep publishing the raw per-joint DLT triangulation (v1 Stage A) purely
+    # for RViz A/B comparison; the estimation no longer depends on it.
+    publish_raw_triangulation: true
+
+    # ---------------- Stage A+C: model-based rigid fit ------------------ #
+    # false -> ablation: raw DLT + Procrustes (v1's A+C) as the measurement,
+    #          no LM refinement, no warm start, no single-view continuation.
+    model_fit.enabled: true
+    model_fit.max_iters: 20            # LM iterations per fit
+    model_fit.huber_px: 5.0            # robust-kernel knee (pixels)
+    model_fit.min_joints: 6            # min inlier joints to accept a fit
+    model_fit.max_rmse_px: 25.0        # reject fits worse than this; also
+                                       # triggers a re-bootstrap from DLT
+    model_fit.publish_debug: false     # log fit rmse/inliers (throttled)
+
+    # Continue tracking from a single view (monocular PnP) when the other
+    # camera misses the hand. Only continues an existing track (a cold start
+    # still needs two views); the Kalman gate rejects wild depth excursions.
+    single_view.enabled: true
+    single_view.conf_scale: 0.5        # extra confidence penalty, single view
+
+    # ---------------- Stage B1: reachability shell ---------------------- #
+    # Applied to the FITTED wrist position (not per joint as in v1).
+    # Shoulder anchors live in hand_template.yaml (shell: section).
+    reachability_gate.enabled: false
+    reachability_gate.d_min: 0.10      # m; closer than this to the shoulder -> reject
+    reachability_gate.d_max: 0.85      # m; ~0.66 m avg adult reach + margin
+    reachability_gate.behind_margin: 0.10   # m; reject points behind the head
+    reachability_gate.forward_axis: [0.0, 0.0, 1.0]   # cameras look down +z
+
+    # ---------------- Stage B2: RANSAC (pixel domain) -------------------- #
+    ransac.enabled: true
+    ransac.iterations: 30
+    ransac.sample_size: 4              # 3 minimum; 4 more stable
+    # Joint inlier threshold on the WORST per-view reprojection residual.
+    ransac.inlier_thresh_px: 8.0
+
+    # ---------------- Stage D: Kalman ------------------------------------ #
+    kalman.enabled: true
+    kalman.process_noise_pos: 10.0     # sigma_a^2 (m/s^2)^2; larger -> responsive
+    kalman.measurement_noise_pos: 0.0006   # m^2 (~2.5 cm std); larger -> smoother
+    kalman.gate_threshold: 11.345      # chi-square(3 DoF, 0.99)
+    kalman.orientation_lpf: 0.5        # SLERP step toward the measurement
+    kalman.max_coast_frames: 10        # predict-only frames before track reset
+
+    # ---------------- Stage E: One-Euro ---------------------------------- #
+    one_euro.enabled: true
+    one_euro.min_cutoff: 1.0           # Hz; lower -> less jitter when still
+    one_euro.beta: 0.007               # higher -> less lag on fast motion
+    one_euro.d_cutoff: 1.0             # Hz; derivative cutoff (rarely tuned)

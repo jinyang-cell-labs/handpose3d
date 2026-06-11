@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>handpose_estimation_v2</name>
+  <version>0.1.0</version>
+  <description>
+    Model-based 3D hand pose estimation (v2). Replaces per-joint
+    triangulation + 3D Procrustes (stages A + C of handpose_estimation) with a
+    direct multi-view rigid fit: the 21-landmark hand template's 6-DoF pose is
+    estimated by minimising robust 2D reprojection error in all views
+    simultaneously, so the template's bone lengths constrain depth inside the
+    optimisation. Stages B1/D/E are reused from handpose_estimation.
+  </description>
+  <maintainer email="jinyang@cell-labs.ai">jinyang</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- v2 imports the ROS-free math modules (triangulation, wrist_pose_pipeline)
+       and shares the model/template/rviz assets of v1. -->
+  <exec_depend>handpose_estimation</exec_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
