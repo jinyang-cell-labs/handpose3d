@@ -57,3 +57,5 @@ recordings/
 
 # Data Set
 data_set/
+
+*.stl

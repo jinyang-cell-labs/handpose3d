@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Headset FOV Designer</title>
+<style>
+  :root{
+    --bg:#0b0e13;
+    --viewport:#0c1016;
+    --panel:#11151d;
+    --panel-2:#161b25;
+    --line:#232b39;
+    --text:#cdd6e3;
+    --muted:#76828f;
+    --muted-2:#566071;
+    --accent:#4cc9f0;
+    --warn:#f4a261;
+    --radius:5px;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hidden;}
+  body{-webkit-font-smoothing:antialiased;}
+  #app{position:fixed;inset:0;display:flex;}
+  /* Viewport ------------------------------------------------------------- */
+  #stage{position:relative;flex:1 1 auto;min-width:0;background:var(--viewport);}
+  #stage canvas{display:block;}
+  #overlay{position:absolute;top:0;left:0;right:0;padding:16px 18px;pointer-events:none;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;}
+  .brand{pointer-events:none;}
+  .brand h1{margin:0;font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--text);}
+  .brand p{margin:3px 0 0;font-size:11px;color:var(--muted);letter-spacing:.02em;max-width:42ch;}
+  .hud{pointer-events:none;font-family:var(--mono);font-size:11px;color:var(--muted);text-align:right;line-height:1.7;}
+  .hud b{color:var(--accent);font-weight:500;}
+  #dropnote{position:absolute;inset:0;display:none;align-items:center;justify-content:center;pointer-events:none;
+    background:rgba(76,201,240,.06);border:1.5px dashed var(--accent);z-index:5;}
+  #dropnote span{font-family:var(--mono);font-size:13px;color:var(--accent);letter-spacing:.04em;}
+  #dropnote.show{display:flex;}
+  /* Panel ---------------------------------------------------------------- */
+  #panel{flex:0 0 358px;width:358px;max-width:90vw;background:var(--panel);border-left:1px solid var(--line);
+    display:flex;flex-direction:column;height:100%;}
+  .p-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);}
+  .p-head .tab{font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);}
+  .p-body{overflow-y:auto;overflow-x:hidden;flex:1;}
+  .p-body::-webkit-scrollbar{width:9px;}
+  .p-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:9px;border:3px solid var(--panel);}
+  section{border-bottom:1px solid var(--line);padding:14px 16px;}
+  .sec-title{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted-2);margin:0 0 11px;}
+  /* Camera list ---------------------------------------------------------- */
+  .cam-row{display:flex;align-items:center;gap:9px;padding:7px 8px;border:1px solid transparent;border-radius:var(--radius);
+    cursor:pointer;margin-bottom:4px;transition:background .12s,border-color .12s;}
+  .cam-row:hover{background:var(--panel-2);}
+  .cam-row.sel{background:var(--panel-2);border-color:var(--line);}
+  .swatch{width:11px;height:11px;border-radius:2px;flex:0 0 auto;box-shadow:0 0 0 1px rgba(255,255,255,.12) inset;}
+  .cam-check{accent-color:var(--accent);width:14px;height:14px;flex:0 0 auto;margin:0;cursor:pointer;}
+  .cam-name{flex:1;font-size:12.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cam-row .ico{flex:0 0 auto;width:22px;height:22px;display:grid;place-items:center;border-radius:4px;color:var(--muted);font-size:12px;}
+  .cam-row .ico:hover{background:var(--line);color:var(--text);}
+  .row-btns{display:flex;gap:7px;margin-top:9px;}
+  button.btn{font-family:var(--sans);font-size:12px;color:var(--text);background:var(--panel-2);border:1px solid var(--line);
+    border-radius:var(--radius);padding:7px 11px;cursor:pointer;flex:1;transition:background .12s,border-color .12s;}
+  button.btn:hover{background:#1d2533;border-color:#2f3a4c;}
+  button.btn.accent{color:#06131a;background:var(--accent);border-color:var(--accent);font-weight:600;}
+  button.btn.accent:hover{background:#69d4f5;}
+  button.btn.ghost{background:transparent;}
+  /* Fields --------------------------------------------------------------- */
+  .field{margin-bottom:13px;}
+  .field:last-child{margin-bottom:0;}
+  .field-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:5px;gap:8px;}
+  .field-label{font-size:11.5px;color:var(--muted);letter-spacing:.01em;}
+  .field-num{font-family:var(--mono);font-size:12px;color:var(--text);background:var(--panel-2);border:1px solid var(--line);
+    border-radius:4px;width:74px;padding:3px 6px;text-align:right;}
+  .field-num:focus{outline:none;border-color:var(--accent);}
+  .triple{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
+  .triple .mini label{display:block;font-family:var(--mono);font-size:10px;color:var(--muted-2);margin-bottom:3px;letter-spacing:.08em;}
+  .triple .mini input{font-family:var(--mono);font-size:12px;color:var(--text);background:var(--panel-2);border:1px solid var(--line);
+    border-radius:4px;width:100%;padding:5px 6px;text-align:right;}
+  .triple .mini input:focus{outline:none;border-color:var(--accent);}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:3px;background:var(--line);border-radius:3px;margin:0;cursor:pointer;}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:var(--text);
+    border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line);}
+  input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:var(--text);border:2px solid var(--panel);}
+  .text-in{font-family:var(--sans);font-size:13px;color:var(--text);background:var(--panel-2);border:1px solid var(--line);
+    border-radius:var(--radius);width:100%;padding:7px 9px;}
+  .text-in:focus{outline:none;border-color:var(--accent);}
+  /* Presets -------------------------------------------------------------- */
+  .presets{display:flex;flex-wrap:wrap;gap:6px;}
+  .chip{font-family:var(--mono);font-size:10.5px;letter-spacing:.02em;color:var(--muted);background:var(--panel-2);
+    border:1px solid var(--line);border-radius:20px;padding:4px 10px;cursor:pointer;}
+  .chip:hover{color:var(--text);border-color:#2f3a4c;}
+  /* Optical readout (signature) ----------------------------------------- */
+  .readout{background:#0a0d12;border:1px solid var(--line);border-radius:var(--radius);padding:11px 13px;margin-top:4px;
+    font-family:var(--mono);}
+  .readout .r-row{display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;}
+  .readout .r-k{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted-2);}
+  .readout .r-v{font-size:15px;color:var(--accent);font-variant-numeric:tabular-nums;}
+  .readout .r-v small{font-size:10px;color:var(--muted);margin-left:3px;}
+  .readout .r-sep{height:1px;background:var(--line);margin:6px -13px;}
+  .empty{color:var(--muted-2);font-size:12.5px;line-height:1.6;text-align:center;padding:18px 6px;}
+  .hint{font-size:11px;color:var(--muted-2);line-height:1.5;margin-top:8px;}
+  .switch{display:flex;align-items:center;justify-content:space-between;padding:6px 0;}
+  .switch span{font-size:12.5px;color:var(--text);}
+  .toggle{position:relative;width:34px;height:18px;flex:0 0 auto;background:var(--line);border-radius:20px;cursor:pointer;transition:background .15s;}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s;}
+  .toggle.on{background:rgba(76,201,240,.35);}
+  .toggle.on::after{transform:translateX(16px);background:var(--accent);}
+  #collapse{position:absolute;top:16px;right:374px;z-index:6;display:none;}
+  @media (max-width:760px){
+    #panel{position:fixed;right:0;top:0;bottom:0;z-index:7;box-shadow:-12px 0 40px rgba(0,0,0,.5);}
+    #app.panel-hidden #panel{transform:translateX(100%);}
+    #collapse{display:grid;right:16px;}
+    #app.panel-hidden #collapse{right:16px;}
+    .hud{display:none;}
+  }
+  .iconbtn{pointer-events:auto;width:34px;height:34px;display:grid;place-items:center;background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);color:var(--text);cursor:pointer;}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <div id="overlay">
+      <div class="brand">
+        <h1>Headset&nbsp;FOV&nbsp;Designer</h1>
+        <p>Place cameras, set optics, and read coverage. Drag to orbit · scroll to zoom · click a frustum to select.</p>
+      </div>
+      <div class="hud" id="hud"></div>
+    </div>
+    <div id="dropnote"><span>Drop model to load · glb · gltf · obj · stl</span></div>
+    <button class="iconbtn" id="collapse" title="Toggle panel">≡</button>
+  </div>
+
+  <aside id="panel">
+    <div class="p-head">
+      <span class="tab">Layout</span>
+      <span class="tab" id="camcount" style="color:var(--accent)"></span>
+    </div>
+    <div class="p-body">
+      <section id="sec-cameras">
+        <h2 class="sec-title">Cameras</h2>
+        <div id="camlist"></div>
+        <div class="row-btns">
+          <button class="btn accent" id="addcam">+ Add camera</button>
+          <button class="btn" id="dupcam">Duplicate</button>
+        </div>
+      </section>
+
+      <section id="sec-editor"><!-- filled dynamically --></section>
+
+      <section id="sec-intersect">
+        <h2 class="sec-title">Intersection</h2>
+        <div class="switch"><span>Intersection mode</span><div class="toggle" id="tg-inter"></div></div>
+        <p class="hint">Shows only the volume seen by every checked camera, and hides everything outside it. Use the checkboxes in the list to pick the set.</p>
+        <div class="readout" id="inter-readout" style="margin-top:10px">
+          <div class="r-row"><span class="r-k">Status</span><span class="r-v" id="inter-status" style="font-size:13px">Off</span></div>
+          <div class="r-row"><span class="r-k">Cameras</span><span class="r-v" id="inter-n" style="font-size:13px">–</span></div>
+          <div class="r-sep"></div>
+          <div class="r-row"><span class="r-k">Overlap vol</span><span class="r-v" id="inter-vol">–</span></div>
+        </div>
+        <div class="field" id="inter-opacity-field" style="margin-top:12px"></div>
+        <button class="btn" id="frameinter" style="flex:none;width:100%">Frame intersection</button>
+      </section>
+
+      <section id="sec-model">
+        <h2 class="sec-title">Reference model</h2>
+        <div class="row-btns" style="margin-top:0">
+          <button class="btn" id="importbtn">Import model…</button>
+          <button class="btn ghost" id="clearmodel">Clear</button>
+        </div>
+        <div id="modelctl" style="margin-top:13px;display:none">
+          <div id="modelpose"></div>
+          <div class="field" id="modelscale-field"></div>
+          <button class="btn ghost" id="recenter" style="flex:none;width:100%">Reset pose &amp; scale</button>
+        </div>
+        <p class="hint" id="modelname">No model loaded. You can also drag a file onto the viewport.</p>
+        <input type="file" id="fileinput" accept=".glb,.gltf,.obj,.stl" style="display:none" />
+      </section>
+
+      <section id="sec-view">
+        <h2 class="sec-title">Scene</h2>
+        <div class="switch"><span>Ground grid</span><div class="toggle on" id="tg-grid"></div></div>
+        <div class="switch"><span>Origin axes</span><div class="toggle on" id="tg-axes"></div></div>
+        <div class="row-btns">
+          <button class="btn" id="frameall">Frame all</button>
+          <button class="btn" id="exportjson">Export JSON</button>
+        </div>
+      </section>
+
+      <section id="sec-project">
+        <h2 class="sec-title">Project</h2>
+        <div class="row-btns" style="margin-top:0">
+          <button class="btn accent" id="saveproj">Save…</button>
+          <button class="btn" id="loadproj">Load…</button>
+        </div>
+        <p class="hint" id="projectnote">Saves all cameras, the intersection set, scene toggles, and the model pose to a JSON file you can reload. The 3D model mesh isn't stored — re-import it and its pose reapplies.</p>
+        <input type="file" id="projfile" accept=".json,application/json" style="display:none" />
+      </section>
+    </div>
+  </aside>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
+
+// ---------- helpers ----------
+const $ = (s,p=document)=>p.querySelector(s);
+const el=(t,c,txt)=>{const e=document.createElement(t);if(c)e.className=c;if(txt!=null)e.textContent=txt;return e;};
+const d2r=d=>d*Math.PI/180, r2d=r=>r*180/Math.PI;
+const fmt=(v,n=2)=>{const f=parseFloat(v);return Number.isFinite(f)?(+f.toFixed(n)).toString():'0';};
+const PALETTE=['#4cc9f0','#f4a261','#e76f51','#90be6d','#b5a8ff','#f72585','#43aa8b','#ffd166','#ff8fab','#56cfe1'];
+
+// ---------- three.js setup ----------
+const stage=$('#stage');
+const scene=new THREE.Scene();
+scene.background=new THREE.Color('#0c1016');
+
+const view=new THREE.PerspectiveCamera(45, 1, 0.01, 5000);
+view.position.set(0.9,0.55,1.5);
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+stage.appendChild(renderer.domElement);
+
+const controls=new OrbitControls(view, renderer.domElement);
+controls.enableDamping=true;
+controls.dampingFactor=0.08;
+controls.target.set(0,0,-0.4);
+
+scene.add(new THREE.AmbientLight(0xffffff,0.65));
+const dir=new THREE.DirectionalLight(0xffffff,0.9);
+dir.position.set(1,2,1.5); scene.add(dir);
+const dir2=new THREE.DirectionalLight(0x86a0c0,0.35);
+dir2.position.set(-1,0.5,-1); scene.add(dir2);
+
+const axes=new THREE.AxesHelper(0.35);
+// GridHelper with safe, valid colors
+function safeGrid(){
+  const g=new THREE.GridHelper(2,20,0x2c3a4d,0x18212e);
+  g.position.y=0; return g;
+}
+const gridObj=safeGrid(); scene.add(gridObj); scene.add(axes);
+
+// ---------- state ----------
+let uid=0;
+const state={cameras:[], selectedId:null, model:null, modelScale:1, showGrid:true, showAxes:true,
+  intersectMode:false, intersectOpacity:0.5,
+  modelPose:{x:0,y:0,z:0,yaw:0,pitch:0,roll:0}};
+const raycaster=new THREE.Raycaster();
+let raycastTargets=[];
+let intersectDirty=false;
+
+// pose group: holds the imported model's user pose (translate + rotate).
+// The model itself is centered/auto-fit inside it, so pose is independent of fit.
+const modelPivot=new THREE.Group();
+modelPivot.rotation.order='YXZ';
+scene.add(modelPivot);
+
+// intersection solid (single mesh + edge outline, rebuilt on demand)
+const interGroup=new THREE.Group();
+const interMesh=new THREE.Mesh(new THREE.BufferGeometry(),
+  new THREE.MeshBasicMaterial({color:0xe8f6ff,transparent:true,opacity:0.5,side:THREE.DoubleSide,depthWrite:false}));
+interMesh.renderOrder=3;
+const interEdges=new THREE.LineSegments(new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({color:0x4cc9f0}));
+interGroup.add(interMesh,interEdges);
+interGroup.visible=false;
+scene.add(interGroup);
+
+// ---------- frustum geometry ----------
+function frustumData(cam){
+  const f=Math.max(cam.focal,0.001);
+  const hfov=2*Math.atan((cam.sensorW/2)/f);
+  const vfov=2*Math.atan((cam.sensorH/2)/f);
+  const L=cam.far;
+  const hw=L*Math.tan(hfov/2), hh=L*Math.tan(vfov/2);
+  // forward = -Z (matches a real perspective camera)
+  const A=[0,0,0], c0=[-hw,-hh,-L], c1=[hw,-hh,-L], c2=[hw,hh,-L], c3=[-hw,hh,-L];
+  const tri=[]; const t=(a,b,c)=>tri.push(...a,...b,...c);
+  t(A,c0,c1); t(A,c1,c2); t(A,c2,c3); t(A,c3,c0); t(c0,c1,c2); t(c0,c2,c3);
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(tri,3));
+  geo.computeVertexNormals();
+  const seg=[]; const s=(a,b)=>seg.push(...a,...b);
+  s(A,c0);s(A,c1);s(A,c2);s(A,c3); s(c0,c1);s(c1,c2);s(c2,c3);s(c3,c0);
+  const edgeGeo=new THREE.BufferGeometry();
+  edgeGeo.setAttribute('position',new THREE.Float32BufferAttribute(seg,3));
+  return {geo,edgeGeo,hfov,vfov};
+}
+
+// Local-space corners of a frustum (forward = -Z, apex at origin)
+function frustumCornersLocal(cam){
+  const f=Math.max(cam.focal,0.001);
+  const hfov=2*Math.atan((cam.sensorW/2)/f);
+  const vfov=2*Math.atan((cam.sensorH/2)/f);
+  const L=cam.far;
+  const hw=L*Math.tan(hfov/2), hh=L*Math.tan(vfov/2);
+  return {
+    apex:new THREE.Vector3(0,0,0),
+    c0:new THREE.Vector3(-hw,-hh,-L), c1:new THREE.Vector3(hw,-hh,-L),
+    c2:new THREE.Vector3(hw,hh,-L),   c3:new THREE.Vector3(-hw,hh,-L),
+    interior:new THREE.Vector3(0,0,-L*0.5) // a point strictly inside, for plane orientation
+  };
+}
+
+function ensureObjects(cam){
+  if(cam.group) return;
+  const group=new THREE.Group(); group.rotation.order='YXZ';
+  const mesh=new THREE.Mesh(new THREE.BufferGeometry(),
+    new THREE.MeshBasicMaterial({transparent:true,side:THREE.DoubleSide,depthWrite:false}));
+  mesh.userData.camId=cam.id; mesh.renderOrder=2;
+  const edges=new THREE.LineSegments(new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({transparent:true}));
+  const marker=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.03,0.045),
+    new THREE.MeshBasicMaterial());
+  marker.userData.camId=cam.id; marker.position.z=-0.022;
+  group.add(mesh,edges,marker); scene.add(group);
+  Object.assign(cam,{group,mesh,edges,marker});
+  raycastTargets.push(mesh,marker);
+}
+
+function updateVisual(cam){
+  ensureObjects(cam);
+  const {geo,edgeGeo,hfov,vfov}=frustumData(cam);
+  cam.mesh.geometry.dispose(); cam.mesh.geometry=geo;
+  cam.edges.geometry.dispose(); cam.edges.geometry=edgeGeo;
+  const col=new THREE.Color(cam.color);
+  cam.mesh.material.color=col;
+  cam.edges.material.color=col;
+  cam.marker.material.color=col;
+  cam.group.position.set(cam.pos.x,cam.pos.y,cam.pos.z);
+  cam.group.rotation.set(d2r(cam.rot.pitch),d2r(cam.rot.yaw),d2r(cam.rot.roll));
+  cam._fov={hfov,vfov};
+  applyDisplayMode();
+  intersectDirty=true;
+  updateHud();
+}
+
+// Set per-camera visibility/opacity for the current display mode.
+function applyDisplayMode(){
+  const m=state.intersectMode;
+  state.cameras.forEach(c=>{
+    if(!c.group) return;
+    const sel=c.id===state.selectedId;
+    if(m){
+      // only contributing frustums, as faint wireframe; fills hidden, non-set hidden
+      c.group.visible=c.visible && c.inSet;
+      c.mesh.visible=false;
+      c.edges.visible=true; c.edges.material.opacity=0.3;
+      c.marker.visible=true;
+    }else{
+      c.group.visible=c.visible;
+      c.mesh.visible=true; c.mesh.material.opacity=c.opacity*(sel?1:0.7);
+      c.edges.visible=true; c.edges.material.opacity=sel?1:0.45;
+      c.marker.visible=true;
+    }
+  });
+  interMesh.material.opacity=state.intersectOpacity;
+}
+
+// ---------- frustum intersection (convex half-space enumeration) ----------
+// Each frustum is a convex solid bounded by 5 planes. The intersection of the
+// selected frustums is the set of points satisfying every plane (n·x <= d).
+function worldPlanes(cam){
+  cam.group.updateMatrixWorld(true);
+  const M=cam.group.matrixWorld, L=frustumCornersLocal(cam);
+  const A=L.apex.clone().applyMatrix4(M);
+  const c0=L.c0.clone().applyMatrix4(M), c1=L.c1.clone().applyMatrix4(M),
+        c2=L.c2.clone().applyMatrix4(M), c3=L.c3.clone().applyMatrix4(M);
+  const inside=L.interior.clone().applyMatrix4(M);
+  const faces=[[A,c0,c1],[A,c1,c2],[A,c2,c3],[A,c3,c0],[c0,c1,c2]]; // 4 sides + far plane
+  const planes=[];
+  for(const [a,b,c] of faces){
+    const n=new THREE.Vector3().subVectors(b,a).cross(new THREE.Vector3().subVectors(c,a));
+    if(n.lengthSq()<1e-12) continue;
+    n.normalize();
+    let d=n.dot(a);
+    if(n.dot(inside)>d){ n.negate(); d=-d; } // orient so the interior point is inside
+    planes.push({n,d});
+  }
+  return planes;
+}
+function intersectionPoints(cams){
+  const planes=[];
+  cams.forEach(c=>{ for(const p of worldPlanes(c)) planes.push(p); });
+  const N=planes.length, kept=[], eps=1e-5;
+  for(let i=0;i<N;i++)for(let j=i+1;j<N;j++)for(let k=j+1;k<N;k++){
+    const ni=planes[i].n, nj=planes[j].n, nk=planes[k].n;
+    const njxk=new THREE.Vector3().crossVectors(nj,nk);
+    const det=ni.dot(njxk);
+    if(Math.abs(det)<1e-7) continue; // planes nearly parallel
+    const nkxi=new THREE.Vector3().crossVectors(nk,ni);
+    const nixj=new THREE.Vector3().crossVectors(ni,nj);
+    const x=njxk.multiplyScalar(planes[i].d)
+      .add(nkxi.multiplyScalar(planes[j].d))
+      .add(nixj.multiplyScalar(planes[k].d)).divideScalar(det);
+    let ok=true;
+    for(let m=0;m<N;m++){ if(planes[m].n.dot(x)>planes[m].d+eps){ ok=false; break; } }
+    if(ok) kept.push(x);
+  }
+  const out=[];
+  for(const p of kept) if(!out.some(q=>q.distanceToSquared(p)<1e-8)) out.push(p);
+  return out;
+}
+function meshVolume(geo){
+  const pos=geo.attributes.position; let v=0;
+  const a=new THREE.Vector3(),b=new THREE.Vector3(),c=new THREE.Vector3();
+  for(let i=0;i<pos.count;i+=3){
+    a.fromBufferAttribute(pos,i); b.fromBufferAttribute(pos,i+1); c.fromBufferAttribute(pos,i+2);
+    v+=a.dot(b.clone().cross(c));
+  }
+  return Math.abs(v)/6;
+}
+function clearInterGeo(){
+  interMesh.geometry.dispose(); interMesh.geometry=new THREE.BufferGeometry();
+  interEdges.geometry.dispose(); interEdges.geometry=new THREE.BufferGeometry();
+}
+function rebuildIntersection(){
+  intersectDirty=false;
+  if(!state.intersectMode){ interGroup.visible=false; updateIntersectStatus(); return; }
+  const cams=state.cameras.filter(c=>c.inSet && c.visible);
+  if(cams.length<2){
+    clearInterGeo(); interGroup.visible=false;
+    state._interInfo={n:cams.length,ok:false,empty:false,volume:0}; updateIntersectStatus(); return;
+  }
+  const pts=intersectionPoints(cams);
+  if(pts.length<4){
+    clearInterGeo(); interGroup.visible=false;
+    state._interInfo={n:cams.length,ok:false,empty:true,volume:0}; updateIntersectStatus(); return;
+  }
+  try{
+    const geo=new ConvexGeometry(pts);
+    interMesh.geometry.dispose(); interMesh.geometry=geo;
+    interEdges.geometry.dispose(); interEdges.geometry=new THREE.EdgesGeometry(geo,1);
+    interGroup.visible=true;
+    state._interInfo={n:cams.length,ok:true,empty:false,volume:meshVolume(geo)};
+  }catch(e){
+    clearInterGeo(); interGroup.visible=false;
+    state._interInfo={n:cams.length,ok:false,empty:true,volume:0};
+  }
+  updateIntersectStatus();
+}
+function updateIntersectStatus(){
+  const st=$('#inter-status'), nn=$('#inter-n'), vv=$('#inter-vol');
+  if(!st) return;
+  const info=state._interInfo||{};
+  if(!state.intersectMode){ st.textContent='Off'; st.style.color='var(--muted)'; nn.textContent='–'; vv.textContent='–'; return; }
+  const setCams=state.cameras.filter(c=>c.inSet&&c.visible);
+  nn.textContent=setCams.length+' in set';
+  if(setCams.length<2){ st.textContent='Pick ≥2'; st.style.color='var(--warn)'; vv.textContent='–'; return; }
+  if(info.empty){ st.textContent='No overlap'; st.style.color='var(--warn)'; vv.textContent='0'; return; }
+  if(info.ok){ st.textContent='Overlap'; st.style.color='var(--accent)'; vv.innerHTML=`${info.volume.toFixed(4)}<small>u³</small>`; return; }
+  st.textContent='…'; st.style.color='var(--muted)';
+}
+
+// ---------- camera CRUD ----------
+function makeCamera(opts={}){
+  const i=state.cameras.length;
+  return Object.assign({
+    id:++uid, name:opts.name||`Camera ${i+1}`,
+    color:opts.color||PALETTE[i%PALETTE.length],
+    pos:opts.pos||{x:0,y:0,z:0},
+    rot:opts.rot||{yaw:0,pitch:0,roll:0},
+    focal:opts.focal??2.0, sensorW:opts.sensorW??4.0, sensorH:opts.sensorH??3.0,
+    far:opts.far??1.2, opacity:opts.opacity??0.16,
+    visible:opts.visible!==undefined?opts.visible:true,
+    inSet:opts.inSet!==undefined?opts.inSet:true
+  });
+}
+function addCamera(opts){
+  const cam=makeCamera(opts);
+  state.cameras.push(cam);
+  updateVisual(cam);
+  selectCamera(cam.id);
+  renderList();
+  return cam;
+}
+function removeCamera(id){
+  const idx=state.cameras.findIndex(c=>c.id===id); if(idx<0)return;
+  const cam=state.cameras[idx];
+  scene.remove(cam.group);
+  cam.mesh.geometry.dispose(); cam.edges.geometry.dispose(); cam.marker.geometry.dispose();
+  raycastTargets=raycastTargets.filter(o=>o!==cam.mesh&&o!==cam.marker);
+  state.cameras.splice(idx,1);
+  if(state.selectedId===id) state.selectedId=state.cameras.length?state.cameras[Math.max(0,idx-1)].id:null;
+  renderList(); renderEditor();
+  state.cameras.forEach(updateVisual);
+}
+function selectCamera(id){
+  state.selectedId=id; renderList(); renderEditor();
+  state.cameras.forEach(updateVisual);
+}
+function selected(){return state.cameras.find(c=>c.id===state.selectedId);}
+
+// ---------- UI: camera list ----------
+function renderList(){
+  const list=$('#camlist'); list.innerHTML='';
+  state.cameras.forEach(cam=>{
+    const row=el('div','cam-row'+(cam.id===state.selectedId?' sel':''));
+    const chk=document.createElement('input'); chk.type='checkbox'; chk.className='cam-check';
+    chk.checked=cam.inSet; chk.title='Include in intersection set';
+    chk.onclick=e=>{e.stopPropagation();cam.inSet=chk.checked;applyDisplayMode();
+      if(state.intersectMode)rebuildIntersection();};
+    const sw=el('div','swatch'); sw.style.background=cam.color;
+    const nm=el('div','cam-name',cam.name);
+    const eye=el('div','ico',cam.visible?'◉':'○'); eye.title='Toggle visibility';
+    eye.onclick=e=>{e.stopPropagation();cam.visible=!cam.visible;updateVisual(cam);renderList();
+      if(state.intersectMode)rebuildIntersection();};
+    const del=el('div','ico','✕'); del.title='Delete';
+    del.onclick=e=>{e.stopPropagation();removeCamera(cam.id);};
+    row.append(chk,sw,nm,eye,del);
+    row.onclick=()=>selectCamera(cam.id);
+    list.appendChild(row);
+  });
+  $('#camcount').textContent=state.cameras.length+(state.cameras.length===1?' cam':' cams');
+}
+
+// ---------- UI: field builder ----------
+function sliderField(parent,{label,min,max,step,value,unit,onInput}){
+  const wrap=el('div','field');
+  const head=el('div','field-head');
+  head.appendChild(el('span','field-label',unit?`${label} (${unit})`:label));
+  const num=el('input','field-num'); num.type='number'; num.step=step; num.value=fmt(value,3);
+  head.appendChild(num);
+  const range=el('input'); range.type='range'; range.min=min; range.max=max; range.step=step; range.value=value;
+  const apply=(v,fromRange)=>{const f=parseFloat(v); if(!Number.isFinite(f))return; range.value=f; if(!fromRange||true)num.value=fmt(f,3); onInput(f);};
+  range.addEventListener('input',()=>{num.value=fmt(range.value,3);onInput(parseFloat(range.value));});
+  num.addEventListener('input',()=>{range.value=num.value;onInput(parseFloat(num.value)||0);});
+  wrap.append(head,range); parent.appendChild(wrap);
+  return {set:v=>{range.value=v;num.value=fmt(v,3);}};
+}
+
+// ---------- UI: editor ----------
+function renderEditor(){
+  const sec=$('#sec-editor'); sec.innerHTML='';
+  const cam=selected();
+  if(!cam){
+    sec.appendChild(el('h2','sec-title','Selected camera'));
+    const e=el('div','empty','No camera selected.\nAdd one or click a frustum in the viewport.');
+    e.style.whiteSpace='pre-line'; sec.appendChild(e); return;
+  }
+  sec.appendChild(el('h2','sec-title','Selected camera'));
+
+  // name + color
+  const nameRow=el('div','field');
+  const nameIn=el('input','text-in'); nameIn.value=cam.name;
+  nameIn.style.paddingLeft='34px';
+  const cwrap=el('div'); cwrap.style.position='relative';
+  const colorIn=document.createElement('input'); colorIn.type='color'; colorIn.value=cam.color;
+  colorIn.style.cssText='position:absolute;left:8px;top:50%;transform:translateY(-50%);width:18px;height:18px;border:none;background:none;padding:0;cursor:pointer;';
+  nameIn.addEventListener('input',()=>{cam.name=nameIn.value;renderList();});
+  colorIn.addEventListener('input',()=>{cam.color=colorIn.value;updateVisual(cam);renderList();});
+  cwrap.append(colorIn,nameIn); nameRow.appendChild(cwrap); sec.appendChild(nameRow);
+
+  // position triple
+  sec.appendChild(tripleField('Position',['x','y','z'],cam.pos,0.01,v=>{updateVisual(cam);}));
+  // rotation triple (deg)
+  sec.appendChild(tripleField('Orientation°',['yaw','pitch','roll'],cam.rot,1,v=>{updateVisual(cam);}));
+
+  // optics
+  const optTitle=el('h2','sec-title','Optics'); optTitle.style.margin='16px 0 11px'; sec.appendChild(optTitle);
+  const presets=el('div','presets');
+  [['Wide 90°',{focal:2,sensorW:4,sensorH:3}],
+   ['Standard',{focal:4,sensorW:4,sensorH:3}],
+   ['Tele',{focal:8,sensorW:4,sensorH:3}],
+   ['FF 24mm',{focal:24,sensorW:36,sensorH:24}]].forEach(([lbl,p])=>{
+    const c=el('span','chip',lbl);
+    c.onclick=()=>{Object.assign(cam,p);renderEditor();updateVisual(cam);};
+    presets.appendChild(c);
+  });
+  sec.appendChild(presets);
+  const optWrap=el('div'); optWrap.style.marginTop='13px'; sec.appendChild(optWrap);
+  sliderField(optWrap,{label:'Focal length',unit:'mm',min:1,max:80,step:0.1,value:cam.focal,onInput:v=>{cam.focal=v;updateVisual(cam);refreshReadout();}});
+  sliderField(optWrap,{label:'Sensor width',unit:'mm',min:1,max:40,step:0.1,value:cam.sensorW,onInput:v=>{cam.sensorW=v;updateVisual(cam);refreshReadout();}});
+  sliderField(optWrap,{label:'Sensor height',unit:'mm',min:1,max:40,step:0.1,value:cam.sensorH,onInput:v=>{cam.sensorH=v;updateVisual(cam);refreshReadout();}});
+  sliderField(optWrap,{label:'Range',unit:'units',min:0.1,max:10,step:0.1,value:cam.far,onInput:v=>{cam.far=v;updateVisual(cam);}});
+  sliderField(optWrap,{label:'Opacity',min:0.02,max:0.6,step:0.01,value:cam.opacity,onInput:v=>{cam.opacity=v;updateVisual(cam);}});
+
+  // readout
+  const ro=el('div','readout');
+  ro.innerHTML=`
+    <div class="r-row"><span class="r-k">H-FOV</span><span class="r-v" id="ro-h">–</span></div>
+    <div class="r-row"><span class="r-k">V-FOV</span><span class="r-v" id="ro-v">–</span></div>
+    <div class="r-sep"></div>
+    <div class="r-row"><span class="r-k">Diagonal</span><span class="r-v" id="ro-d">–</span></div>
+    <div class="r-row"><span class="r-k">Aspect</span><span class="r-v" id="ro-a">–</span></div>`;
+  sec.appendChild(ro);
+  refreshReadout();
+}
+function tripleField(title,keys,obj,step,onInput){
+  const wrap=el('div','field');
+  wrap.appendChild(el('div','field-label',title)); wrap.querySelector('.field-label').style.marginBottom='6px';
+  wrap.querySelector('.field-label').style.display='block';
+  const grid=el('div','triple');
+  keys.forEach(k=>{
+    const mini=el('div','mini');
+    mini.appendChild(el('label',null,k.toUpperCase()));
+    const inp=el('input'); inp.type='number'; inp.step=step; inp.value=fmt(obj[k],3);
+    inp.addEventListener('input',()=>{obj[k]=parseFloat(inp.value)||0;onInput();});
+    mini.appendChild(inp); grid.appendChild(mini);
+  });
+  wrap.appendChild(grid); return wrap;
+}
+function refreshReadout(){
+  const cam=selected(); if(!cam||!cam._fov)return;
+  const h=$('#ro-h'),v=$('#ro-v'),dd=$('#ro-d'),a=$('#ro-a'); if(!h)return;
+  const hd=r2d(cam._fov.hfov), vd=r2d(cam._fov.vfov);
+  const diag=r2d(2*Math.atan(Math.hypot(cam.sensorW,cam.sensorH)/2/Math.max(cam.focal,0.001)));
+  h.innerHTML=`${hd.toFixed(1)}<small>deg</small>`;
+  v.innerHTML=`${vd.toFixed(1)}<small>deg</small>`;
+  dd.innerHTML=`${diag.toFixed(1)}<small>deg</small>`;
+  a.innerHTML=`${(cam.sensorW/cam.sensorH).toFixed(3)}<small>:1</small>`;
+}
+
+// ---------- HUD ----------
+function updateHud(){
+  const n=state.cameras.length;
+  const vis=state.cameras.filter(c=>c.visible).length;
+  $('#hud').innerHTML=`<b>${n}</b> cameras · <b>${vis}</b> visible`+
+    (state.model?`<br>model: <b>loaded</b>`:'');
+}
+
+// ---------- model import ----------
+function clearModel(){
+  if(state.model){modelPivot.remove(state.model);state.model.traverse(o=>{o.geometry&&o.geometry.dispose();});}
+  state.model=null; $('#modelctl').style.display='none';
+  $('#modelname').textContent='No model loaded. You can also drag a file onto the viewport.';
+  updateHud();
+}
+function applyModelTransform(){
+  const m=state.model; if(!m)return;
+  // inner object: auto-fit scale + centering, so its centre sits at the pivot origin
+  const s=(m.userData.baseScale||1)*state.modelScale;
+  m.scale.setScalar(s);
+  const c=m.userData.center||new THREE.Vector3();
+  m.position.copy(c).multiplyScalar(-s);
+  // pivot: user pose (position + orientation)
+  const p=state.modelPose;
+  modelPivot.position.set(p.x,p.y,p.z);
+  modelPivot.rotation.set(d2r(p.pitch),d2r(p.yaw),d2r(p.roll));
+  modelPivot.updateMatrixWorld(true);
+}
+function setModel(obj,name){
+  clearModel();
+  state.model=obj; modelPivot.add(obj);
+  obj.scale.setScalar(1); obj.position.set(0,0,0); obj.updateMatrixWorld(true);
+  // Imported models come in arbitrary units (an STL in mm can be hundreds of
+  // units across). Fit the largest dimension to ~1 scene unit and center it on
+  // the origin so it sits with the camera rig and grid instead of dwarfing them.
+  const box=new THREE.Box3().setFromObject(obj);
+  const size=box.getSize(new THREE.Vector3());
+  const center=box.getCenter(new THREE.Vector3());
+  const maxDim=Math.max(size.x,size.y,size.z)||1;
+  obj.userData.baseScale=1.0/maxDim;
+  obj.userData.center=center.clone();
+  obj.userData.srcName=name||'model';
+  if(state._pendingModel){ state._pendingModel=false; } // keep pose/scale restored from a loaded project
+  else { state.modelScale=1; state.modelPose={x:0,y:0,z:0,yaw:0,pitch:0,roll:0}; }
+  applyModelTransform();
+  $('#modelname').textContent=`${name||'model'} · auto-fit ×${obj.userData.baseScale.toPrecision(3)}`;
+  $('#modelctl').style.display='block';
+  buildModelControls();
+  updateHud(); frameAll();
+}
+function buildModelControls(){
+  const pose=$('#modelpose'); pose.innerHTML='';
+  pose.appendChild(tripleField('Model position',['x','y','z'],state.modelPose,0.01,applyModelTransform));
+  pose.appendChild(tripleField('Model orientation°',['yaw','pitch','roll'],state.modelPose,1,applyModelTransform));
+  const f=$('#modelscale-field'); f.innerHTML='';
+  sliderField(f,{label:'Model scale (× auto-fit)',min:0.05,max:20,step:0.01,value:state.modelScale,onInput:v=>{
+    state.modelScale=v||0.05; applyModelTransform();
+  }});
+}
+function recenterModel(){
+  if(!state.model)return;
+  state.modelScale=1;
+  state.modelPose={x:0,y:0,z:0,yaw:0,pitch:0,roll:0};
+  buildModelControls(); applyModelTransform(); frameAll();
+}
+function loadFile(file){
+  if(!file)return;
+  const ext=file.name.toLowerCase().split('.').pop();
+  const reader=new FileReader();
+  const fail=e=>{$('#modelname').textContent='Could not read '+file.name+' — check the format.';console.error(e);};
+  const ok=obj=>setModel(obj,file.name);
+  reader.onerror=fail;
+  // Parse from in-memory data instead of fetching a blob URL. This avoids the
+  // loaders' internal fetch(), which fails inside sandboxed iframes that proxy
+  // fetch via postMessage (a Request object can't be structured-cloned).
+  if(ext==='glb'||ext==='gltf'){
+    reader.onload=()=>{ try{ new GLTFLoader().parse(reader.result,'',g=>ok(g.scene),fail); }catch(e){fail(e);} };
+    reader.readAsArrayBuffer(file);
+  }else if(ext==='obj'){
+    reader.onload=()=>{ try{ ok(new OBJLoader().parse(reader.result)); }catch(e){fail(e);} };
+    reader.readAsText(file);
+  }else if(ext==='stl'){
+    reader.onload=()=>{ try{
+      const g=new STLLoader().parse(reader.result);
+      ok(new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:0x9aa6b4,metalness:0.05,roughness:0.85})));
+    }catch(e){fail(e);} };
+    reader.readAsArrayBuffer(file);
+  }else{
+    $('#modelname').textContent='Unsupported file type: .'+ext;
+  }
+}
+
+// ---------- framing ----------
+function frameAll(){
+  const box=new THREE.Box3();
+  state.cameras.forEach(c=>{if(c.visible)box.expandByObject(c.group);});
+  if(state.model)box.expandByObject(state.model);
+  if(box.isEmpty())return;
+  const c=box.getCenter(new THREE.Vector3());
+  const size=box.getSize(new THREE.Vector3()).length()||1;
+  controls.target.copy(c);
+  const dirv=new THREE.Vector3(0.7,0.5,1).normalize();
+  view.position.copy(c).addScaledVector(dirv,size*0.9);
+  view.near=size/500; view.far=size*50; view.updateProjectionMatrix();
+  controls.update();
+}
+
+// ---------- picking ----------
+let down=null;
+renderer.domElement.addEventListener('pointerdown',e=>{down={x:e.clientX,y:e.clientY};});
+renderer.domElement.addEventListener('pointerup',e=>{
+  if(!down)return; const moved=Math.hypot(e.clientX-down.x,e.clientY-down.y); down=null;
+  if(moved>5)return;
+  const r=renderer.domElement.getBoundingClientRect();
+  const mouse=new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1);
+  raycaster.setFromCamera(mouse,view);
+  const hits=raycaster.intersectObjects(raycastTargets.filter(o=>o.parent&&o.parent.visible),false);
+  if(hits.length){const id=hits[0].object.userData.camId; if(id)selectCamera(id);}
+});
+
+// ---------- wiring ----------
+$('#addcam').onclick=()=>{
+  const i=state.cameras.length;
+  addCamera({pos:{x:(i%2?1:-1)*0.06,y:0,z:0},rot:{yaw:(i%2?-1:1)*15,pitch:0,roll:0}});
+};
+$('#dupcam').onclick=()=>{
+  const s=selected(); if(!s){$('#addcam').click();return;}
+  addCamera({name:s.name+' copy',pos:{...s.pos},rot:{...s.rot},focal:s.focal,sensorW:s.sensorW,sensorH:s.sensorH,far:s.far,opacity:s.opacity});
+};
+$('#importbtn').onclick=()=>$('#fileinput').click();
+$('#fileinput').onchange=e=>loadFile(e.target.files[0]);
+$('#clearmodel').onclick=clearModel;
+$('#recenter').onclick=recenterModel;
+$('#frameall').onclick=frameAll;
+$('#exportjson').onclick=()=>{
+  const cameras=state.cameras.map(c=>({
+    name:c.name,color:c.color,position:c.pos,rotation_deg:c.rot,
+    focal_mm:c.focal,sensor_mm:{width:c.sensorW,height:c.sensorH},range:c.far,
+    hfov_deg:+r2d(c._fov.hfov).toFixed(2),vfov_deg:+r2d(c._fov.vfov).toFixed(2)
+  }));
+  const data={cameras};
+  if(state.model){
+    const p=state.modelPose;
+    data.model={
+      position:{x:p.x,y:p.y,z:p.z},
+      rotation_deg:{yaw:p.yaw,pitch:p.pitch,roll:p.roll},
+      scale_x_autofit:state.modelScale, autofit:state.model.userData.baseScale
+    };
+  }
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);const a=el('a');a.href=url;a.download='camera_layout.json';a.click();URL.revokeObjectURL(url);
+};
+function bindToggle(sel,getter,setter){
+  const t=$(sel); t.onclick=()=>{const v=!getter();setter(v);t.classList.toggle('on',v);};
+}
+
+// ---------- save / load project ----------
+function saveProject(){
+  const data={
+    version:1,
+    cameras:state.cameras.map(c=>({name:c.name,color:c.color,pos:{...c.pos},rot:{...c.rot},
+      focal:c.focal,sensorW:c.sensorW,sensorH:c.sensorH,far:c.far,opacity:c.opacity,visible:c.visible,inSet:c.inSet})),
+    selectedIndex:Math.max(0,state.cameras.findIndex(c=>c.id===state.selectedId)),
+    intersect:{mode:state.intersectMode,opacity:state.intersectOpacity},
+    scene:{showGrid:state.showGrid,showAxes:state.showAxes},
+    model:state.model?{name:state.model.userData.srcName||'model',pose:{...state.modelPose},scale:state.modelScale}:null
+  };
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);const a=el('a');a.href=url;a.download='headset-fov-project.json';a.click();URL.revokeObjectURL(url);
+  $('#projectnote').textContent='Saved headset-fov-project.json';
+}
+function loadProjectFile(file){
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onerror=()=>{$('#projectnote').textContent='Could not read the file.';};
+  reader.onload=()=>{
+    let data; try{data=JSON.parse(reader.result);}catch(e){$('#projectnote').textContent='That file is not valid JSON.';return;}
+    if(!data||!Array.isArray(data.cameras)){$('#projectnote').textContent='Not a valid project file (no cameras found).';return;}
+    applyProject(data);
+    const m=data.model?` · re-import "${data.model.name||'model'}" to restore its mesh (pose reapplies)`:'';
+    $('#projectnote').textContent=`Loaded ${data.cameras.length} cameras${m}.`;
+  };
+  reader.readAsText(file);
+}
+function applyProject(data){
+  // replace all cameras
+  [...state.cameras].forEach(c=>removeCamera(c.id));
+  data.cameras.forEach(c=>addCamera({name:c.name,color:c.color,pos:c.pos,rot:c.rot,
+    focal:c.focal,sensorW:c.sensorW,sensorH:c.sensorH,far:c.far,opacity:c.opacity,visible:c.visible,inSet:c.inSet}));
+  // scene toggles
+  const sc=data.scene||{};
+  state.showGrid=sc.showGrid!==false; state.showAxes=sc.showAxes!==false;
+  gridObj.visible=state.showGrid; axes.visible=state.showAxes;
+  $('#tg-grid').classList.toggle('on',state.showGrid);
+  $('#tg-axes').classList.toggle('on',state.showAxes);
+  // intersection
+  const it=data.intersect||{};
+  state.intersectOpacity=typeof it.opacity==='number'?it.opacity:0.5;
+  interMesh.material.opacity=state.intersectOpacity; interOpacityCtl.set(state.intersectOpacity);
+  state.intersectMode=!!it.mode; $('#tg-inter').classList.toggle('on',state.intersectMode);
+  // model pose/scale (mesh not stored)
+  if(data.model){
+    state.modelScale=typeof data.model.scale==='number'?data.model.scale:1;
+    state.modelPose=Object.assign({x:0,y:0,z:0,yaw:0,pitch:0,roll:0},data.model.pose||{});
+    if(state.model){ applyModelTransform(); buildModelControls(); }
+    else { state._pendingModel=true; }
+  }
+  // selection + full refresh
+  if(state.cameras.length){
+    const idx=Math.min(Math.max(0,data.selectedIndex|0),state.cameras.length-1);
+    selectCamera(state.cameras[idx].id);
+  } else { state.selectedId=null; renderEditor(); }
+  renderList(); applyDisplayMode(); rebuildIntersection(); updateHud(); frameAll();
+}
+$('#saveproj').onclick=saveProject;
+$('#loadproj').onclick=()=>$('#projfile').click();
+$('#projfile').onchange=e=>{loadProjectFile(e.target.files[0]); e.target.value='';};
+
+bindToggle('#tg-grid',()=>state.showGrid,v=>{state.showGrid=v;gridObj.visible=v;});
+bindToggle('#tg-axes',()=>state.showAxes,v=>{state.showAxes=v;axes.visible=v;});
+bindToggle('#tg-inter',()=>state.intersectMode,v=>{state.intersectMode=v;applyDisplayMode();rebuildIntersection();});
+const interOpacityCtl=sliderField($('#inter-opacity-field'),{label:'Highlight opacity',min:0.1,max:1,step:0.01,value:state.intersectOpacity,
+  onInput:v=>{state.intersectOpacity=v;interMesh.material.opacity=v;}});
+$('#frameinter').onclick=()=>{
+  if(!interGroup.visible){frameAll();return;}
+  const box=new THREE.Box3().setFromObject(interMesh);
+  if(box.isEmpty()){frameAll();return;}
+  const c=box.getCenter(new THREE.Vector3());
+  const size=box.getSize(new THREE.Vector3()).length()||1;
+  controls.target.copy(c);
+  view.position.copy(c).add(new THREE.Vector3(0.7,0.5,1).normalize().multiplyScalar(size*1.6));
+  controls.update();
+};
+$('#collapse').onclick=()=>$('#app').classList.toggle('panel-hidden');
+
+// drag & drop
+const drop=$('#dropnote');
+['dragenter','dragover'].forEach(ev=>stage.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('show');}));
+['dragleave','drop'].forEach(ev=>stage.addEventListener(ev,e=>{e.preventDefault();if(ev==='drop'||e.target===stage)drop.classList.remove('show');}));
+stage.addEventListener('drop',e=>{drop.classList.remove('show');if(e.dataTransfer.files.length)loadFile(e.dataTransfer.files[0]);});
+
+// ---------- resize + loop ----------
+function resize(){
+  const w=stage.clientWidth,h=stage.clientHeight;
+  renderer.setSize(w,h,false); view.aspect=w/h; view.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(stage); resize();
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(reduce)controls.enableDamping=false;
+(function loop(){requestAnimationFrame(loop);controls.update();
+  if(intersectDirty && state.intersectMode) rebuildIntersection();
+  renderer.render(scene,view);})();
+
+// ---------- seed: a stereo pair ----------
+addCamera({name:'Left',  color:PALETTE[0], pos:{x:-0.06,y:0,z:0}, rot:{yaw:20,pitch:0,roll:0}});
+addCamera({name:'Right', color:PALETTE[1], pos:{x: 0.06,y:0,z:0}, rot:{yaw:-20,pitch:0,roll:0}});
+selectCamera(state.cameras[0].id);
+updateHud();
+updateIntersectStatus();
+</script>
+</body>
+</html>
