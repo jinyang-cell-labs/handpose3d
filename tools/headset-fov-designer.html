@@ -201,7 +201,7 @@
           <button class="btn accent" id="saveproj">Save…</button>
           <button class="btn" id="loadproj">Load…</button>
         </div>
-        <p class="hint" id="projectnote">Saves all cameras, the intersection set, scene toggles, and the model pose to a JSON file you can reload. The 3D model mesh isn't stored — re-import it and its pose reapplies.</p>
+        <p class="hint" id="projectnote">Save / Load always use one file (headset-fov-project.json). Pick it once — put it beside this page — and every later Save/Load reuses it with no prompt. The 3D model mesh isn't stored; re-import it and its pose reapplies.</p>
         <input type="file" id="projfile" accept=".json,application/json" style="display:none" />
       </section>
     </div>
@@ -782,8 +782,44 @@ function bindToggle(sel,getter,setter){
 }
 
 // ---------- save / load project ----------
-function saveProject(){
-  const data={
+// Save and Load both target ONE fixed file, named below. With the File System
+// Access API (Chromium browsers) the handle to that file is remembered in
+// IndexedDB, so after picking it once every later Save/Load hits the same file
+// with no prompt — point it at this page's folder on the first pick to keep the
+// project JSON beside the HTML. Browsers without the API fall back to the
+// classic download / file-chooser flow.
+const PROJECT_FILENAME='headset-fov-project.json';
+const FS_API=('showSaveFilePicker' in window) && ('showOpenFilePicker' in window);
+const JSON_PICKER_TYPES=[{description:'FOV project JSON',accept:{'application/json':['.json']}}];
+let projHandle=null;
+
+function openProjDB(){
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open('fov-designer',1);
+    r.onupgradeneeded=()=>r.result.createObjectStore('kv');
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+  });
+}
+async function idbGet(key){
+  try{ const db=await openProjDB();
+    return await new Promise((res,rej)=>{const q=db.transaction('kv').objectStore('kv').get(key);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error);});
+  }catch(e){ return undefined; }
+}
+async function idbSet(key,val){
+  try{ const db=await openProjDB();
+    await new Promise((res,rej)=>{const q=db.transaction('kv','readwrite').objectStore('kv').put(val,key);q.onsuccess=()=>res();q.onerror=()=>rej(q.error);});
+  }catch(e){}
+}
+async function ensurePermission(handle,mode){
+  const opts={mode};
+  if((await handle.queryPermission(opts))==='granted')return true;
+  return (await handle.requestPermission(opts))==='granted';
+}
+// Restore the remembered file handle (if any) so the first Save/Load reuses it.
+(async()=>{ if(FS_API) projHandle=(await idbGet('projHandle'))||null; })();
+
+function projectData(){
+  return {
     version:1,
     cameras:state.cameras.map(c=>({name:c.name,color:c.color,pos:{...c.pos},rot:{...c.rot},
       focal:c.focal,sensorW:c.sensorW,sensorH:c.sensorH,far:c.far,opacity:c.opacity,visible:c.visible,inSet:c.inSet})),
@@ -792,21 +828,51 @@ function saveProject(){
     scene:{showGrid:state.showGrid,showAxes:state.showAxes},
     model:state.model?{name:state.model.userData.srcName||'model',pose:{...state.modelPose},scale:state.modelScale}:null
   };
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
-  const url=URL.createObjectURL(blob);const a=el('a');a.href=url;a.download='headset-fov-project.json';a.click();URL.revokeObjectURL(url);
-  $('#projectnote').textContent='Saved headset-fov-project.json';
+}
+function applyProjectText(text){
+  let data; try{data=JSON.parse(text);}catch(e){$('#projectnote').textContent='That file is not valid JSON.';return;}
+  if(!data||!Array.isArray(data.cameras)){$('#projectnote').textContent='Not a valid project file (no cameras found).';return;}
+  applyProject(data);
+  const m=data.model?` · re-import "${data.model.name||'model'}" to restore its mesh (pose reapplies)`:'';
+  $('#projectnote').textContent=`Loaded ${data.cameras.length} cameras${m}.`;
+}
+async function saveProject(){
+  const json=JSON.stringify(projectData(),null,2);
+  if(FS_API){
+    try{
+      if(!projHandle){
+        projHandle=await window.showSaveFilePicker({suggestedName:PROJECT_FILENAME,types:JSON_PICKER_TYPES});
+        await idbSet('projHandle',projHandle);
+      }
+      if(!(await ensurePermission(projHandle,'readwrite'))){$('#projectnote').textContent='Permission to write the file was denied.';return;}
+      const w=await projHandle.createWritable(); await w.write(json); await w.close();
+      $('#projectnote').textContent=`Saved to ${projHandle.name}.`;
+      return;
+    }catch(e){ if(e&&e.name==='AbortError')return; /* otherwise fall back to download */ }
+  }
+  const blob=new Blob([json],{type:'application/json'});
+  const url=URL.createObjectURL(blob);const a=el('a');a.href=url;a.download=PROJECT_FILENAME;a.click();URL.revokeObjectURL(url);
+  $('#projectnote').textContent=`Saved ${PROJECT_FILENAME}.`;
+}
+async function loadProject(){
+  if(FS_API){
+    try{
+      if(!projHandle){
+        [projHandle]=await window.showOpenFilePicker({types:JSON_PICKER_TYPES,multiple:false});
+        await idbSet('projHandle',projHandle);
+      }
+      if(!(await ensurePermission(projHandle,'read'))){$('#projectnote').textContent='Permission to read the file was denied.';return;}
+      applyProjectText(await (await projHandle.getFile()).text());
+      return;
+    }catch(e){ if(e&&e.name==='AbortError')return; /* otherwise fall back to file chooser */ }
+  }
+  $('#projfile').click();
 }
 function loadProjectFile(file){
   if(!file)return;
   const reader=new FileReader();
   reader.onerror=()=>{$('#projectnote').textContent='Could not read the file.';};
-  reader.onload=()=>{
-    let data; try{data=JSON.parse(reader.result);}catch(e){$('#projectnote').textContent='That file is not valid JSON.';return;}
-    if(!data||!Array.isArray(data.cameras)){$('#projectnote').textContent='Not a valid project file (no cameras found).';return;}
-    applyProject(data);
-    const m=data.model?` · re-import "${data.model.name||'model'}" to restore its mesh (pose reapplies)`:'';
-    $('#projectnote').textContent=`Loaded ${data.cameras.length} cameras${m}.`;
-  };
+  reader.onload=()=>applyProjectText(reader.result);
   reader.readAsText(file);
 }
 function applyProject(data){
@@ -840,7 +906,7 @@ function applyProject(data){
   renderList(); applyDisplayMode(); rebuildIntersection(); updateHud(); frameAll();
 }
 $('#saveproj').onclick=saveProject;
-$('#loadproj').onclick=()=>$('#projfile').click();
+$('#loadproj').onclick=loadProject;
 $('#projfile').onchange=e=>{loadProjectFile(e.target.files[0]); e.target.value='';};
 
 bindToggle('#tg-grid',()=>state.showGrid,v=>{state.showGrid=v;gridObj.visible=v;});

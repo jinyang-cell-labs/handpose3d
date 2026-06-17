@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "cameras": [
+    {
+      "name": "Left",
+      "color": "#4cc9f0",
+      "pos": {
+        "x": -0.06,
+        "y": 1,
+        "z": 0
+      },
+      "rot": {
+        "yaw": 40,
+        "pitch": -45,
+        "roll": 0
+      },
+      "focal": 530,
+      "sensorW": 640,
+      "sensorH": 480,
+      "far": 1.2,
+      "opacity": 0.16,
+      "visible": true,
+      "inSet": true
+    },
+    {
+      "name": "Right",
+      "color": "#f4a261",
+      "pos": {
+        "x": 0,
+        "y": 1,
+        "z": 0
+      },
+      "rot": {
+        "yaw": 20,
+        "pitch": -45,
+        "roll": 0
+      },
+      "focal": 530,
+      "sensorW": 640,
+      "sensorH": 480,
+      "far": 1.2,
+      "opacity": 0.16,
+      "visible": true,
+      "inSet": true
+    }
+  ],
+  "selectedIndex": 0,
+  "intersect": {
+    "mode": true,
+    "opacity": 0.5
+  },
+  "scene": {
+    "showGrid": true,
+    "showAxes": true
+  },
+  "model": {
+    "name": "6ft Male Dummie.stl",
+    "pose": {
+      "x": 0,
+      "y": 0.49,
+      "z": 0,
+      "yaw": 180,
+      "pitch": 0,
+      "roll": 0
+    },
+    "scale": 1
+  }
+}

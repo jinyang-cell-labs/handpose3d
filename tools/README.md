@@ -48,9 +48,12 @@ It starts seeded with a stereo camera pair so there's something to look at immed
 - *Frame all* fits the whole scene in view.
 
 ### Save / load
-- **Save** writes the full working state to a `headset-fov-project.json` file you can reload later.
-- **Load** restores that state.
+- **Save** and **Load** both target a single fixed file, `headset-fov-project.json`.
+- In Chromium-based browsers (Chrome, Edge), the tool uses the File System Access API: the **first** Save or Load asks you to pick that file once — choose the folder this page lives in so the project JSON sits beside the HTML — and the file handle is then remembered (in IndexedDB) so every later Save overwrites it and every Load reads it back, with no further prompt. Saving and reading always reference the same file.
+- In browsers without the File System Access API (Firefox, Safari), it falls back to the classic flow: Save downloads `headset-fov-project.json` and Load opens a file chooser.
 - **Export JSON** writes a separate, human-readable specification (including computed FOV angles) for handing off to another tool or pipeline.
+
+> **Note:** Browsers cannot silently write to an arbitrary absolute path for security reasons, so the file location is established by your one-time pick rather than hard-coded. After that first pick it is automatic. To repoint at a different file, clear the site's data for the page.
 
 See [Data formats](#data-formats) for the structure of both files.
 
