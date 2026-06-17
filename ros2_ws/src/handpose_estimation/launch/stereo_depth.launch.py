@@ -25,13 +25,6 @@ def generate_launch_description():
                 name="stereo_depth_node",
                 output="screen",
                 parameters=[config_file],
-                # The node subscribes to <name>/image_raw and <name>/camera_info.
-                # The camera_info topics already match; remap the image topics to
-                # the rotated streams (same as handpose_estimation.launch.py).
-                remappings=[
-                    ("camera0/image_raw", "/camera0_rot/image_rotated"),
-                    ("camera1/image_raw", "/camera1_rot/image_rotated"),
-                ],
             ),
             launch_ros.actions.Node(
                 package="rviz2",

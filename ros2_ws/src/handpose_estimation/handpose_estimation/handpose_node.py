@@ -92,17 +92,6 @@ FITTED_COLORS = {
     "Right": ColorRGBA(r=0.9, g=0.9, b=0.3, a=0.8),  # yellow-ish
 }
 
-# ===== HOTFIX(rotate-90): TEMPORARY =========================================
-# The current rosbag publishes a 90deg-rotated image (hardware limitation).
-# We rotate it upright before detection so MediaPipe works and the frame lines
-# up with the camera_info calibration (landscape 640x480 -> portrait 480x640).
-# Set to None to disable, or DELETE this constant + the fenced block in
-# _on_images, once the upstream publishes upright images.
-#   options: cv2.ROTATE_90_CLOCKWISE / cv2.ROTATE_90_COUNTERCLOCKWISE / cv2.ROTATE_180
-_HOTFIX_ROTATE = cv2.ROTATE_90_CLOCKWISE
-# ============================================================================
-
-
 class HandPoseNode(Node):
     def __init__(self):
         super().__init__("handpose_node")
@@ -532,15 +521,7 @@ class HandPoseNode(Node):
         for i, (name, msg) in enumerate(zip(self.camera_names, msgs)):
             frame_bgr = self._decode_to_bgr(msg)
 
-            # ===== HOTFIX(rotate-90): TEMPORARY =============================
-            # Un-rotate the rosbag image (see _HOTFIX_ROTATE at top of file).
-            # DELETE this block once the upstream publishes upright images.
-            if _HOTFIX_ROTATE is not None:
-                frame_bgr = cv2.rotate(frame_bgr, _HOTFIX_ROTATE)
-            # ===== END HOTFIX ===============================================
-
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            # Use the (possibly rotated) frame's own dimensions for scaling.
             h, w = frame_bgr.shape[:2]
             hands, scores = self._detect_hands(
                 self.detectors[i], frame_rgb, timestamp_ms, w, h

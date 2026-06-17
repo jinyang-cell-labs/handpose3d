@@ -1,0 +1,40 @@
+# Point Grey Bumblebee2 RIGHT camera (rectified stereo), from the dataset
+# readme.txt: same intrinsics as the left camera, baseline = 120.054 mm.
+#
+# The projection matrix's 4th column encodes the baseline as Tx = -fx * B.
+# ROS CameraInfo P is metric, and handpose_estimation reads the baseline as
+# |P[0,3]| / fx METRES (effective_scale = 1.0, "rectified P is already metric"),
+# so B must be in METRES: 120.054 mm = 0.120054 m.
+#   Tx = -822.79041 * 0.120054 = -98.77927988
+# Triangulated 3D points therefore come out in metres; the dataset's handPara
+# ground-truth labels are in millimetres, so scale labels by 1e-3 to compare.
+camera_name: "camera1"
+
+image_width: 640
+image_height: 480
+
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [822.79041, 0.0, 318.47345,
+         0.0, 822.79041, 250.31296,
+         0.0, 0.0, 1.0]
+
+distortion_model: "plumb_bob"
+
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [822.79041, 0.0, 318.47345, -98.77927988,
+         0.0, 822.79041, 250.31296, 0.0,
+         0.0, 0.0, 1.0, 0.0]

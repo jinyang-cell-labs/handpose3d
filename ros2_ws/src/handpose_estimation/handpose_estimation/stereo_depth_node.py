@@ -38,17 +38,6 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 
-# ===== HOTFIX(rotate-90): TEMPORARY =========================================
-# The current rosbag publishes a 90deg-rotated image (hardware limitation).
-# We rotate it upright before rectification so the frame lines up with the
-# camera_info calibration (landscape 640x480 -> portrait 480x640).
-# Keep in sync with handpose_node.py; set to None to disable, or DELETE this
-# constant + the fenced block in _on_images, once the upstream publishes
-# upright images.
-#   options: cv2.ROTATE_90_CLOCKWISE / cv2.ROTATE_90_COUNTERCLOCKWISE / cv2.ROTATE_180
-_HOTFIX_ROTATE = cv2.ROTATE_90_CLOCKWISE
-# ============================================================================
-
 
 class StereoDepthNode(Node):
     def __init__(self):
@@ -105,7 +94,7 @@ class StereoDepthNode(Node):
         # --- calibration state ---------------------------------------------
         # Per-camera K/D/R/P captured once from camera_info (same pattern as
         # handpose_node). Rectification maps are built lazily from the first
-        # image pair so the (possibly hotfix-rotated) frame size is known.
+        # image pair so the frame size is known.
         self.calib = {name: None for name in self.camera_names}
         self.ready = False
         self.maps = None  # {name: (map1, map2)} once built
@@ -264,14 +253,6 @@ class StereoDepthNode(Node):
         frames = {}
         for name, msg in zip(self.camera_names, msgs):
             frame_bgr = self._decode_to_bgr(msg)
-
-            # ===== HOTFIX(rotate-90): TEMPORARY =============================
-            # Un-rotate the rosbag image (see _HOTFIX_ROTATE at top of file).
-            # DELETE this block once the upstream publishes upright images.
-            if _HOTFIX_ROTATE is not None:
-                frame_bgr = cv2.rotate(frame_bgr, _HOTFIX_ROTATE)
-            # ===== END HOTFIX ===============================================
-
             frames[name] = frame_bgr
 
         self._ensure_rectify_maps(frames[self.left].shape)

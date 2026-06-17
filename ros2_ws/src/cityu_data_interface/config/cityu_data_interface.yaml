@@ -1,0 +1,27 @@
+cityu_data_publisher_node:
+  ros__parameters:
+    # Root of the extracted dataset (the folder holding images/ and labels/).
+    # The repo is bind-mounted at /workspace inside the container.
+    dataset_root: "/workspace/ros2_ws/data_set/stereo hand pose data set"
+
+    # >>> Choose which sequence folder to replay here. <<<
+    # One of: B1Counting B1Random B2Counting B2Random B3Counting B3Random
+    #         B4Counting B4Random B5Counting B5Random B6Counting B6Random
+    sequence: "B1Counting"
+
+    # Image streams to publish. Defaults to the Bumblebee2 rectified stereo
+    # pair mapped to camera0/camera1 so this is drop-in for the stereo pipeline.
+    # Other available prefixes: "SK_color", "SK_depth" (RealSense F200).
+    image_prefixes: ["BB_left", "BB_right"]
+    camera_names: ["camera0", "camera1"]
+    camera_info_urls:
+      - "package://cityu_data_interface/config/camera_info/bb_left.yaml"
+      - "package://cityu_data_interface/config/camera_info/bb_right.yaml"
+
+    frame_rate: 30.0
+    loop: true
+
+    # Playback window: skip to start_frame, then play at most num_frames frames
+    # (num_frames < 0 plays to the end of the 1500-frame sequence).
+    start_frame: 0
+    num_frames: -1
