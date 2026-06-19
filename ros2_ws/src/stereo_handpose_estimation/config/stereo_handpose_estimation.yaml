@@ -1,0 +1,41 @@
+stereo_handpose_node:
+  ros__parameters:
+    camera_names: ["camera0", "camera1"]
+    # Per-camera MediaPipe landmark topics (handpose3d_msgs/HandLandmarks),
+    # published by mediapie_landmarks_extraction.
+    landmark_topics:
+      - "camera0/image_raw/landmarks/hands"
+      - "camera1/image_raw/landmarks/hands"
+    camera_info_topics: ["camera0/camera_info", "camera1/camera_info"]
+
+    extrinsics_file: "/workspace/ros2_ws/src/stereo_handpose_estimation/config/extrinsics.yaml"
+    # true:  triangulate from the camera_info stereo calibration (undistort +
+    #        rectify with K/D/R/P, baseline from P). extrinsics.yaml ignored.
+    # false: use extrinsics.yaml + raw K + DLT (no distortion correction).
+    use_camera_info_extrinsics: false
+    world_frame: "world"
+
+    # Place hand_world_landmarks correctly in the world frame by rotating them
+    # from the source camera's optical frame (R_world<-cam). With identity
+    # extrinsics this is a no-op and final = centroid + hand_world.
+    apply_camera_rotation: true
+    # Per-axis sign flip on hand_world_landmarks (before rotation) to reconcile
+    # MediaPipe's world-axis convention if the skeleton renders mirrored.
+    world_landmark_sign: [1.0, 1.0, 1.0]
+
+    # Drop detections below this handedness/detection score.
+    min_score: 0.5
+
+    # Calibration world units -> metres (extrinsics mode; stereo mode forces 1).
+    scale: 0.05
+    joint_size: 0.012     # m, sphere diameter
+    line_width: 0.006     # m, bone thickness
+    centroid_size: 0.03   # m, centroid sphere diameter
+
+    # ApproximateTimeSynchronizer tolerance for pairing the two landmark msgs.
+    sync_slop: 0.05
+    sync_queue_size: 10
+
+    # Publish each camera's pose (TF + frustum marker) for RViz context.
+    publish_camera_pose: true
+    camera_marker_size: 0.08
