@@ -10,6 +10,20 @@ mediapie_landmarks_node:
     # Master switch: publish the annotated images (false = detect/log only).
     enable_annotation: true
 
+    # --------------------------- 3D markers ---------------------------- #
+    # Publish MediaPipe's hand_world_landmarks (metres, single-view estimate)
+    # as a visualization_msgs/MarkerArray for RViz. NO camera_info needed:
+    # these are model-estimated 3D points in a HAND-LOCAL frame (origin ~ the
+    # hand's geometric center), so they show shape but not absolute placement.
+    enable_3d_estimation: true
+    markers_3d_topic: "landmarks/markers_3d"
+    world_frame: "world"
+    joint_size: 0.01        # m, sphere diameter
+    line_width: 0.004       # m, bone thickness
+    # Each (camera, hand) skeleton is offset so they don't overlap at origin.
+    camera_spacing: 0.4     # m between cameras along x
+    hand_spacing: 0.25      # m between Left/Right along y
+
     # --------------------------- MediaPipe ----------------------------- #
     model_path: "/workspace/ros2_ws/src/mediapie_landmarks_extraction/models/hand_landmarker.task"
     num_hands: 2

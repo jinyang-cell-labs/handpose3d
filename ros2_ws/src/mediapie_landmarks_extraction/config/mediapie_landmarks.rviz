@@ -3,12 +3,38 @@ Panels:
     Name: Displays
     Property Tree Widget:
       Expanded:
+        - /Hand Landmarks 3D1
         - /camera0 annotated1
-        - /camera1 annotated1
       Splitter Ratio: 0.5
 Visualization Manager:
   Class: ""
   Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.1
+      Plane Cell Count: 20
+      Color: 160; 160; 164
+      Line Style:
+        Value: Lines
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Axes: true
+      Show Names: true
+      Marker Scale: 0.3
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Hand Landmarks 3D
+      Enabled: true
+      Topic:
+        Value: /landmarks/markers_3d
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Namespaces:
+        {}
     - Class: rviz_default_plugins/Image
       Name: camera0 annotated
       Enabled: true
@@ -29,15 +55,25 @@ Visualization Manager:
         History Policy: Keep Last
   Global Options:
     Background Color: 48; 48; 48
+    Fixed Frame: world
     Frame Rate: 30
   Name: root
   Tools:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
       Name: Current View
+      Distance: 1.5
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.3
+      Yaw: 0.785
     Saved: ~
 Window Geometry:
   Height: 900

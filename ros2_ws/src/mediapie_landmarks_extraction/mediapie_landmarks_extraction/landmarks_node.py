@@ -4,9 +4,16 @@
 MediaPipe hand-landmark extraction node.
 
 A deliberately basic, standalone counterpart to ``handpose_estimation``: it does
-NOT triangulate or estimate 3D pose. For each configured image topic it runs
-MediaPipe's HandLandmarker on the incoming frames, draws the 21 2D landmarks +
-skeleton onto a copy of the image, and republishes the annotated frame.
+NOT triangulate. For each configured image topic it runs MediaPipe's
+HandLandmarker on the incoming frames, draws the 21 2D landmarks + skeleton onto
+a copy of the image, and republishes the annotated frame.
+
+Optionally (``enable_3d_estimation``) it also publishes MediaPipe's own
+``hand_world_landmarks`` as a ``visualization_msgs/MarkerArray`` for RViz. These
+are the model's single-view metric (metres) 3D estimate in a HAND-LOCAL frame
+(origin ~ the hand's geometric center) — NO camera_info / calibration is
+involved, so the hands carry shape but no absolute world placement. Each
+(camera, hand) skeleton is laid out at a distinct offset so they don't overlap.
 
 Everything is config-driven (see config/mediapie_landmarks_extraction.yaml):
 
@@ -16,6 +23,7 @@ Everything is config-driven (see config/mediapie_landmarks_extraction.yaml):
     annotated_suffix        suffix appended to each input topic (when no
                             explicit annotated_topics are given)
     enable_annotation       master switch for publishing annotated images
+    enable_3d_estimation    publish hand_world_landmarks as RViz markers
     model_path / num_hands / min_*_confidence / running_mode   MediaPipe config
 
 One detector is created per input topic so VIDEO-mode timestamps stay
@@ -27,9 +35,14 @@ import os
 import cv2
 import numpy as np
 import rclpy
+from builtin_interfaces.msg import Duration
+from geometry_msgs.msg import Point, TransformStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
+from std_msgs.msg import ColorRGBA
+from tf2_ros import StaticTransformBroadcaster
+from visualization_msgs.msg import Marker, MarkerArray
 
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
@@ -50,6 +63,14 @@ N_LANDMARKS = 21
 # BGR colors for the 2D annotated overlay (OpenCV order), per handedness.
 HAND_BGR = {"Left": (255, 150, 50), "Right": (50, 150, 255)}
 DEFAULT_BGR = (255, 255, 255)
+# RViz marker colors (RGBA) per handedness for the 3D world-landmark skeleton.
+HAND_RGBA = {
+    "Left": ColorRGBA(r=0.2, g=0.6, b=1.0, a=1.0),   # blue
+    "Right": ColorRGBA(r=1.0, g=0.5, b=0.2, a=1.0),  # orange
+}
+DEFAULT_RGBA = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+# Stable (joints, bones) marker ids per hand so updates replace in place.
+HAND_MARKER_IDS = {"Left": (0, 1), "Right": (2, 3)}
 
 
 class LandmarksNode(Node):
@@ -63,6 +84,18 @@ class LandmarksNode(Node):
         self.declare_parameter("annotated_topics", [""])
         self.declare_parameter("annotated_suffix", "/landmarks/annotated")
         self.declare_parameter("enable_annotation", True)
+
+        # 3D: publish MediaPipe hand_world_landmarks (metres, hand-local frame)
+        # as a MarkerArray for RViz. No camera_info / calibration involved.
+        self.declare_parameter("enable_3d_estimation", False)
+        self.declare_parameter("markers_3d_topic", "landmarks/markers_3d")
+        self.declare_parameter("world_frame", "world")
+        self.declare_parameter("joint_size", 0.01)      # m (sphere diameter)
+        self.declare_parameter("line_width", 0.004)     # m (bone thickness)
+        # Layout offsets so multiple cameras/hands don't render on top of
+        # each other (world landmarks are all centered at the hand origin).
+        self.declare_parameter("camera_spacing", 0.4)   # m between cameras (x)
+        self.declare_parameter("hand_spacing", 0.25)    # m between L/R (y)
 
         # MediaPipe HandLandmarker configuration.
         self.declare_parameter(
@@ -99,6 +132,14 @@ class LandmarksNode(Node):
             self.annotated_topics = [t + suffix for t in self.image_topics]
 
         self.enable_annotation = bool(self.get_parameter("enable_annotation").value)
+        self.enable_3d_estimation = bool(
+            self.get_parameter("enable_3d_estimation").value
+        )
+        self.world_frame = self.get_parameter("world_frame").value
+        self.joint_size = float(self.get_parameter("joint_size").value)
+        self.line_width = float(self.get_parameter("line_width").value)
+        self.camera_spacing = float(self.get_parameter("camera_spacing").value)
+        self.hand_spacing = float(self.get_parameter("hand_spacing").value)
         self.model_path = self.get_parameter("model_path").value
         self.num_hands = int(self.get_parameter("num_hands").value)
         self.running_mode = str(self.get_parameter("running_mode").value).lower()
@@ -134,14 +175,40 @@ class LandmarksNode(Node):
                 )
             )
 
+        # --- 3D world-landmark markers (optional) --------------------------
+        self.markers_pub = None
+        self.static_tf_broadcaster = None
+        if self.enable_3d_estimation:
+            self.markers_pub = self.create_publisher(
+                MarkerArray, self.get_parameter("markers_3d_topic").value, 10
+            )
+            # world_world_landmarks have no absolute placement; publish a single
+            # identity transform so `world_frame` exists in TF and RViz can use
+            # it as the fixed frame.
+            self.static_tf_broadcaster = StaticTransformBroadcaster(self)
+            self._broadcast_world_frame()
+
         pairs = ", ".join(
             f"{i} -> {o}" if self.enable_annotation else f"{i} (annotation off)"
             for i, o in zip(self.image_topics, self.annotated_topics)
         )
         self.get_logger().info(
             f"mediapie_landmarks_node ready ({self.running_mode} mode, "
-            f"num_hands={self.num_hands}): {pairs}"
+            f"num_hands={self.num_hands}, 3d={self.enable_3d_estimation}): {pairs}"
         )
+
+    def _broadcast_world_frame(self):
+        """Register `world_frame` in TF via one identity transform.
+
+        Markers are published in `world_frame`; RViz needs the fixed frame to
+        exist in the TF tree, so emit an identity world_frame -> *_origin.
+        """
+        tf = TransformStamped()
+        tf.header.stamp = self.get_clock().now().to_msg()
+        tf.header.frame_id = self.world_frame
+        tf.child_frame_id = f"{self.world_frame}_origin"
+        tf.transform.rotation.w = 1.0
+        self.static_tf_broadcaster.sendTransform([tf])
 
     # ------------------------------------------------------------------ setup
     def _make_landmarker(self):
@@ -172,7 +239,9 @@ class LandmarksNode(Node):
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         h, w = frame_bgr.shape[:2]
 
-        hands = self._detect_hands(self.detectors[idx], frame_rgb, idx, w, h)
+        hands, world_hands = self._detect_hands(
+            self.detectors[idx], frame_rgb, idx, w, h
+        )
 
         n_hands = len(hands)
         self.get_logger().info(
@@ -184,11 +253,17 @@ class LandmarksNode(Node):
         if self.enable_annotation and self.annotated_pubs[idx] is not None:
             self._publish_annotated(idx, frame_bgr, hands, msg.header)
 
-    def _detect_hands(self, detector, frame_rgb, idx, width, height):
-        """Run the landmarker; return {label: (21, 2) pixels}.
+        if self.enable_3d_estimation and self.markers_pub is not None:
+            self._publish_world_markers(idx, world_hands, msg.header.stamp)
 
-        Label is MediaPipe's handedness category ("Left"/"Right"); if the same
-        label is reported twice the higher-confidence detection wins.
+    def _detect_hands(self, detector, frame_rgb, idx, width, height):
+        """Run the landmarker; return ({label: (21, 2) px}, {label: (21, 3) m}).
+
+        The first dict holds image-pixel landmarks (for annotation); the second
+        holds ``hand_world_landmarks`` in metres (hand-local frame), populated
+        only when ``enable_3d_estimation``. Label is MediaPipe's handedness
+        category ("Left"/"Right"); if the same label is reported twice the
+        higher-confidence detection wins.
         """
         mp_image = mp.Image(
             image_format=mp.ImageFormat.SRGB,
@@ -201,18 +276,24 @@ class LandmarksNode(Node):
             self._frame_idx[idx] += 1
             result = detector.detect_for_video(mp_image, timestamp_ms)
 
-        hands, scores = {}, {}
+        hands, world_hands, scores = {}, {}, {}
         if result.hand_landmarks:
-            for lm_list, handed in zip(result.hand_landmarks, result.handedness):
+            world = result.hand_world_landmarks or []
+            for h, handed in enumerate(result.handedness):
                 label = handed[0].category_name  # "Left" / "Right"
                 score = handed[0].score
                 if label in hands and score <= scores[label]:
                     continue
+                lm_list = result.hand_landmarks[h]
                 hands[label] = np.array(
                     [[lm.x * width, lm.y * height] for lm in lm_list], dtype=float
                 )
                 scores[label] = score
-        return hands
+                if self.enable_3d_estimation and h < len(world):
+                    world_hands[label] = np.array(
+                        [[lm.x, lm.y, lm.z] for lm in world[h]], dtype=float
+                    )
+        return hands, world_hands
 
     def _publish_annotated(self, idx, frame_bgr, hands, header):
         frame = frame_bgr.copy()
@@ -239,6 +320,67 @@ class LandmarksNode(Node):
         img.step = w * 3
         img.data = np.ascontiguousarray(frame).tobytes()
         self.annotated_pubs[idx].publish(img)
+
+    def _publish_world_markers(self, idx, world_hands, stamp):
+        """Publish one camera's hand_world_landmarks as RViz markers.
+
+        Each hand's 21 metric points are centered at the hand origin, so the
+        whole skeleton is shifted by a per-(camera, hand) offset to keep
+        multiple hands/cameras from overlapping. Both Left and Right are always
+        published (empty when absent) so a vanished hand clears in RViz.
+        """
+        marker_array = MarkerArray()
+        cam_off = idx * self.camera_spacing
+        for h, label in enumerate(("Left", "Right")):
+            pts3d = world_hands.get(label)
+            color = HAND_RGBA.get(label, DEFAULT_RGBA)
+            joint_id, bone_id = HAND_MARKER_IDS[label]
+            # Left to the left, Right to the right; cameras spread along x.
+            off_x = cam_off
+            off_y = (-1.0 if label == "Left" else 1.0) * (self.hand_spacing / 2.0)
+
+            joints = Marker()
+            joints.header.frame_id = self.world_frame
+            joints.header.stamp = stamp
+            joints.ns = f"cam{idx}_{label.lower()}_joints"
+            joints.id = joint_id
+            joints.type = Marker.SPHERE_LIST
+            joints.action = Marker.ADD
+            joints.scale.x = joints.scale.y = joints.scale.z = self.joint_size
+            joints.color = color
+            joints.lifetime = Duration(sec=0, nanosec=500_000_000)
+            joints.pose.position.x = off_x
+            joints.pose.position.y = off_y
+            joints.pose.orientation.w = 1.0
+
+            bones = Marker()
+            bones.header.frame_id = self.world_frame
+            bones.header.stamp = stamp
+            bones.ns = f"cam{idx}_{label.lower()}_bones"
+            bones.id = bone_id
+            bones.type = Marker.LINE_LIST
+            bones.action = Marker.ADD
+            bones.scale.x = self.line_width
+            bones.color = color
+            bones.lifetime = Duration(sec=0, nanosec=500_000_000)
+            bones.pose.position.x = off_x
+            bones.pose.position.y = off_y
+            bones.pose.orientation.w = 1.0
+
+            if pts3d is not None:
+                def to_point(i, _p=pts3d):
+                    return Point(x=float(_p[i, 0]), y=float(_p[i, 1]),
+                                 z=float(_p[i, 2]))
+
+                for p in range(N_LANDMARKS):
+                    joints.points.append(to_point(p))
+                for a, b in HAND_CONNECTIONS:
+                    bones.points.append(to_point(a))
+                    bones.points.append(to_point(b))
+
+            marker_array.markers.append(joints)
+            marker_array.markers.append(bones)
+        self.markers_pub.publish(marker_array)
 
     def _decode_to_bgr(self, msg):
         """Decode a sensor_msgs/Image to a contiguous bgr8 ndarray.
