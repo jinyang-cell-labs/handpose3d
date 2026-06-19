@@ -1,0 +1,25 @@
+mediapie_landmarks_node:
+  ros__parameters:
+    # ----------------------------- topics ------------------------------ #
+    # Input image topics to run hand-landmark detection on.
+    image_topics: ["camera0/image_raw", "camera1/image_raw"]
+    # Explicit 1:1 output topics. Leave as [""] (empty) to auto-derive each
+    # output as <input_topic> + annotated_suffix.
+    annotated_topics: [""]
+    annotated_suffix: "/landmarks/annotated"
+    # Master switch: publish the annotated images (false = detect/log only).
+    enable_annotation: true
+
+    # --------------------------- MediaPipe ----------------------------- #
+    model_path: "/workspace/ros2_ws/src/mediapie_landmarks_extraction/models/hand_landmarker.task"
+    num_hands: 2
+    min_hand_detection_confidence: 0.5
+    min_hand_presence_confidence: 0.5
+    min_tracking_confidence: 0.5
+    # "video" -> detect_for_video (stateful, per-stream monotonic timestamps);
+    # "image" -> detect (stateless per frame).
+    running_mode: "video"
+
+    # ----------------------------- overlay ----------------------------- #
+    line_thickness: 2
+    point_radius: 3

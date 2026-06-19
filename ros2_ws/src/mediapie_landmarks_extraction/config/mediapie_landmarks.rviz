@@ -1,0 +1,45 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /camera0 annotated1
+        - /camera1 annotated1
+      Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Image
+      Name: camera0 annotated
+      Enabled: true
+      Topic:
+        Value: /camera0/image_raw/landmarks/annotated
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/Image
+      Name: camera1 annotated
+      Enabled: true
+      Topic:
+        Value: /camera1/image_raw/landmarks/annotated
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+  Global Options:
+    Background Color: 48; 48; 48
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400
+  Hide Left Dock: false
