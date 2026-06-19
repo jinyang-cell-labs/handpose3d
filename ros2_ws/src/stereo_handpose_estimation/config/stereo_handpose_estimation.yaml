@@ -12,7 +12,7 @@ stereo_handpose_node:
     # true:  triangulate from the camera_info stereo calibration (undistort +
     #        rectify with K/D/R/P, baseline from P). extrinsics.yaml ignored.
     # false: use extrinsics.yaml + raw K + DLT (no distortion correction).
-    use_camera_info_extrinsics: false
+    use_camera_info_extrinsics: true
     world_frame: "world"
 
     # Place hand_world_landmarks correctly in the world frame by rotating them
