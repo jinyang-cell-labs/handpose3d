@@ -24,6 +24,7 @@ Everything is config-driven (see config/mediapie_landmarks_extraction.yaml):
                             explicit annotated_topics are given)
     enable_annotation       master switch for publishing annotated images
     enable_3d_estimation    publish hand_world_landmarks as RViz markers
+    enable_landmark_msg     publish handpose3d_msgs/HandLandmarks (2D+3D data)
     model_path / num_hands / min_*_confidence / running_mode   MediaPipe config
 
 One detector is created per input topic so VIDEO-mode timestamps stay
@@ -43,6 +44,8 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import ColorRGBA
 from tf2_ros import StaticTransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
+
+from handpose3d_msgs.msg import Hand, HandLandmarks
 
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
@@ -84,6 +87,12 @@ class LandmarksNode(Node):
         self.declare_parameter("annotated_topics", [""])
         self.declare_parameter("annotated_suffix", "/landmarks/annotated")
         self.declare_parameter("enable_annotation", True)
+
+        # Data: publish landmarks (2D image + 3D world), handedness and score
+        # as handpose3d_msgs/HandLandmarks, one topic per input image topic
+        # (<input_topic> + landmarks_suffix).
+        self.declare_parameter("enable_landmark_msg", True)
+        self.declare_parameter("landmarks_suffix", "/landmarks/hands")
 
         # 3D: publish MediaPipe hand_world_landmarks (metres, hand-local frame)
         # as a MarkerArray for RViz. No camera_info / calibration involved.
@@ -132,6 +141,13 @@ class LandmarksNode(Node):
             self.annotated_topics = [t + suffix for t in self.image_topics]
 
         self.enable_annotation = bool(self.get_parameter("enable_annotation").value)
+        self.enable_landmark_msg = bool(
+            self.get_parameter("enable_landmark_msg").value
+        )
+        self.landmark_topics = [
+            t + self.get_parameter("landmarks_suffix").value
+            for t in self.image_topics
+        ]
         self.enable_3d_estimation = bool(
             self.get_parameter("enable_3d_estimation").value
         )
@@ -158,6 +174,7 @@ class LandmarksNode(Node):
         self._frame_idx = [0] * len(self.image_topics)
 
         self.annotated_pubs = []
+        self.landmark_pubs = []
         self.subs = []
         for i, in_topic in enumerate(self.image_topics):
             pub = None
@@ -166,6 +183,14 @@ class LandmarksNode(Node):
                     Image, self.annotated_topics[i], qos_profile_sensor_data
                 )
             self.annotated_pubs.append(pub)
+
+            lm_pub = None
+            if self.enable_landmark_msg:
+                lm_pub = self.create_publisher(
+                    HandLandmarks, self.landmark_topics[i], 10
+                )
+            self.landmark_pubs.append(lm_pub)
+
             self.subs.append(
                 self.create_subscription(
                     Image,
@@ -194,7 +219,8 @@ class LandmarksNode(Node):
         )
         self.get_logger().info(
             f"mediapie_landmarks_node ready ({self.running_mode} mode, "
-            f"num_hands={self.num_hands}, 3d={self.enable_3d_estimation}): {pairs}"
+            f"num_hands={self.num_hands}, 3d={self.enable_3d_estimation}, "
+            f"landmark_msg={self.enable_landmark_msg}): {pairs}"
         )
 
     def _broadcast_world_frame(self):
@@ -239,7 +265,7 @@ class LandmarksNode(Node):
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         h, w = frame_bgr.shape[:2]
 
-        hands, world_hands = self._detect_hands(
+        hands, world_hands, scores = self._detect_hands(
             self.detectors[idx], frame_rgb, idx, w, h
         )
 
@@ -253,17 +279,24 @@ class LandmarksNode(Node):
         if self.enable_annotation and self.annotated_pubs[idx] is not None:
             self._publish_annotated(idx, frame_bgr, hands, msg.header)
 
+        if self.enable_landmark_msg and self.landmark_pubs[idx] is not None:
+            self._publish_landmarks(idx, hands, world_hands, scores, msg.header)
+
         if self.enable_3d_estimation and self.markers_pub is not None:
             self._publish_world_markers(idx, world_hands, msg.header.stamp)
 
     def _detect_hands(self, detector, frame_rgb, idx, width, height):
-        """Run the landmarker; return ({label: (21, 2) px}, {label: (21, 3) m}).
+        """Run the landmarker; return (hands, world_hands, scores).
 
-        The first dict holds image-pixel landmarks (for annotation); the second
-        holds ``hand_world_landmarks`` in metres (hand-local frame), populated
-        only when ``enable_3d_estimation``. Label is MediaPipe's handedness
-        category ("Left"/"Right"); if the same label is reported twice the
-        higher-confidence detection wins.
+        - hands:       {label: (21, 3)} image landmarks — x,y in pixels, z the
+                       model's relative depth.
+        - world_hands: {label: (21, 3)} hand_world_landmarks in metres
+                       (hand-local frame); populated only when 3D or the
+                       landmark message is enabled.
+        - scores:      {label: float} per-hand handedness confidence.
+
+        Label is MediaPipe's handedness category ("Left"/"Right"); if the same
+        label is reported twice the higher-confidence detection wins.
         """
         mp_image = mp.Image(
             image_format=mp.ImageFormat.SRGB,
@@ -276,6 +309,7 @@ class LandmarksNode(Node):
             self._frame_idx[idx] += 1
             result = detector.detect_for_video(mp_image, timestamp_ms)
 
+        want_world = self.enable_3d_estimation or self.enable_landmark_msg
         hands, world_hands, scores = {}, {}, {}
         if result.hand_landmarks:
             world = result.hand_world_landmarks or []
@@ -286,14 +320,15 @@ class LandmarksNode(Node):
                     continue
                 lm_list = result.hand_landmarks[h]
                 hands[label] = np.array(
-                    [[lm.x * width, lm.y * height] for lm in lm_list], dtype=float
+                    [[lm.x * width, lm.y * height, lm.z] for lm in lm_list],
+                    dtype=float,
                 )
                 scores[label] = score
-                if self.enable_3d_estimation and h < len(world):
+                if want_world and h < len(world):
                     world_hands[label] = np.array(
                         [[lm.x, lm.y, lm.z] for lm in world[h]], dtype=float
                     )
-        return hands, world_hands
+        return hands, world_hands, scores
 
     def _publish_annotated(self, idx, frame_bgr, hands, header):
         frame = frame_bgr.copy()
@@ -320,6 +355,33 @@ class LandmarksNode(Node):
         img.step = w * 3
         img.data = np.ascontiguousarray(frame).tobytes()
         self.annotated_pubs[idx].publish(img)
+
+    def _publish_landmarks(self, idx, hands, world_hands, scores, header):
+        """Publish one frame's detections as handpose3d_msgs/HandLandmarks.
+
+        Image landmarks carry x,y pixels + z relative depth; world landmarks
+        (metres, hand-local) are included when available, else left empty.
+        """
+        msg = HandLandmarks()
+        msg.header = header
+        msg.source_topic = self.image_topics[idx]
+        for label, kpts in hands.items():
+            hand = Hand()
+            hand.handedness = label
+            hand.score = float(scores.get(label, 0.0))
+            hand.landmarks_image = [
+                Point(x=float(kpts[p, 0]), y=float(kpts[p, 1]), z=float(kpts[p, 2]))
+                for p in range(N_LANDMARKS)
+            ]
+            world = world_hands.get(label)
+            if world is not None:
+                hand.landmarks_world = [
+                    Point(x=float(world[p, 0]), y=float(world[p, 1]),
+                          z=float(world[p, 2]))
+                    for p in range(N_LANDMARKS)
+                ]
+            msg.hands.append(hand)
+        self.landmark_pubs[idx].publish(msg)
 
     def _publish_world_markers(self, idx, world_hands, stamp):
         """Publish one camera's hand_world_landmarks as RViz markers.

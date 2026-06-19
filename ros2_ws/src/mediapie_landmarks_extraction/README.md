@@ -10,11 +10,38 @@ For each configured image topic it:
 3. draws the landmarks + skeleton onto the frame, and
 4. republishes the annotated frame as `sensor_msgs/Image` (bgr8).
 
-Optionally (`enable_3d_estimation`) it also publishes MediaPipe's
-`hand_world_landmarks` as a `visualization_msgs/MarkerArray` for RViz.
+Optionally it also publishes:
+
+- (`enable_landmark_msg`) the landmarks as data — `handpose3d_msgs/HandLandmarks`
+  with the 2D image landmarks, 3D world landmarks, handedness and confidence.
+- (`enable_3d_estimation`) MediaPipe's `hand_world_landmarks` as a
+  `visualization_msgs/MarkerArray` for RViz.
 
 One detector is created per input topic so VIDEO-mode timestamps stay
 independent across streams.
+
+## Landmark data message (`handpose3d_msgs/HandLandmarks`)
+
+With `enable_landmark_msg: true`, each input topic gets a companion topic
+(`<input_topic>` + `landmarks_suffix`, default `/landmarks/hands`) publishing:
+
+```
+# HandLandmarks
+std_msgs/Header header     # stamp + frame_id from the source image
+string source_topic        # which input image topic
+Hand[] hands
+
+# Hand
+string handedness                      # "Left" / "Right"
+float32 score                          # per-hand confidence [0,1]
+geometry_msgs/Point[] landmarks_image  # 21 pts: x,y pixels, z relative depth
+geometry_msgs/Point[] landmarks_world  # 21 pts: metres, hand-local (empty if N/A)
+```
+
+The messages are defined in the separate `handpose3d_msgs` package (an
+`ament_cmake` interface package — `.msg` generation isn't possible from this
+`ament_python` package). Build `handpose3d_msgs` first. Per-landmark confidence
+is not provided by MediaPipe's Tasks API, so `score` is per hand.
 
 ## 3D estimation (`hand_world_landmarks`)
 
@@ -43,6 +70,8 @@ All behavior is driven by
 | `annotated_topics` | optional explicit 1:1 output topics; `[""]` = auto-derive |
 | `annotated_suffix` | suffix appended to each input topic when no explicit outputs given |
 | `enable_annotation` | publish annotated images (false = detect + log only) |
+| `enable_landmark_msg` | publish `handpose3d_msgs/HandLandmarks` (2D+3D data) |
+| `landmarks_suffix` | suffix appended to each input topic for the data topic |
 | `enable_3d_estimation` | publish `hand_world_landmarks` as an RViz `MarkerArray` |
 | `markers_3d_topic` | output topic for the 3D markers |
 | `world_frame` | frame for the 3D markers (broadcast as a static TF) |

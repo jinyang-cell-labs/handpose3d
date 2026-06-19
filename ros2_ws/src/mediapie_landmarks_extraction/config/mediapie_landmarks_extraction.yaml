@@ -10,6 +10,14 @@ mediapie_landmarks_node:
     # Master switch: publish the annotated images (false = detect/log only).
     enable_annotation: true
 
+    # --------------------------- landmark data ------------------------- #
+    # Publish landmarks (2D image + 3D world), handedness and confidence as
+    # handpose3d_msgs/HandLandmarks, one topic per input image topic
+    # (<input_topic> + landmarks_suffix). The 3D landmarks_world field is only
+    # populated when the model returns world landmarks.
+    enable_landmark_msg: true
+    landmarks_suffix: "/landmarks/hands"
+
     # --------------------------- 3D markers ---------------------------- #
     # Publish MediaPipe's hand_world_landmarks (metres, single-view estimate)
     # as a visualization_msgs/MarkerArray for RViz. NO camera_info needed:
