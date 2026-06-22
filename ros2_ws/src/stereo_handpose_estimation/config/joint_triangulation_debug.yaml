@@ -1,0 +1,24 @@
+joint_triangulation_debug_node:
+  ros__parameters:
+    # Calibration / triangulation settings must match stereo_handpose_node so
+    # the world frame and metric scale line up with the production output.
+    camera_names: ["camera0", "camera1"]
+    landmark_topics:
+      - "camera0/image_raw/landmarks/hands"
+      - "camera1/image_raw/landmarks/hands"
+    camera_info_topics: ["camera0/camera_info", "camera1/camera_info"]
+
+    extrinsics_file: "/workspace/ros2_ws/src/stereo_handpose_estimation/config/extrinsics.yaml"
+    # true:  triangulate from camera_info stereo calibration (undistort + rectify).
+    # false: extrinsics.yaml + raw K + DLT.
+    use_camera_info_extrinsics: true
+    world_frame: "world"
+
+    # Drop detections below this handedness/detection score.
+    min_score: 0.5
+    # Calibration world units -> metres (extrinsics mode; stereo mode forces 1).
+    scale: 0.05
+
+    # ApproximateTimeSynchronizer tolerance for pairing the two landmark msgs.
+    sync_slop: 0.05
+    sync_queue_size: 10

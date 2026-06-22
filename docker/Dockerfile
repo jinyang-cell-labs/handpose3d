@@ -17,6 +17,7 @@ RUN apt update && apt upgrade -y && apt install -y \
     python3-colcon-clean \
     ros-jazzy-camera-info-manager-py \
     ros-jazzy-realsense2-camera \
+    ros-jazzy-plotjuggler-ros \
     ffmpeg \
     libgl1 \
     libglib2.0-0 \
