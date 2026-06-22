@@ -77,6 +77,17 @@ HAND_CONNECTIONS = [
 ]
 N_LANDMARKS = 21
 
+# MediaPipe 21-landmark hand model, in index order. Used to map the
+# centroid_filter_list names onto landmark indices.
+JOINT_NAMES = [
+    "WRIST",
+    "THUMB_CMC", "THUMB_MCP", "THUMB_IP", "THUMB_TIP",
+    "INDEX_MCP", "INDEX_PIP", "INDEX_DIP", "INDEX_TIP",
+    "MIDDLE_MCP", "MIDDLE_PIP", "MIDDLE_DIP", "MIDDLE_TIP",
+    "RING_MCP", "RING_PIP", "RING_DIP", "RING_TIP",
+    "PINKY_MCP", "PINKY_PIP", "PINKY_DIP", "PINKY_TIP",
+]
+
 HAND_LABELS = ("Left", "Right")
 HAND_COLORS = {
     "Left": ColorRGBA(r=0.2, g=0.6, b=1.0, a=1.0),   # blue
@@ -121,6 +132,10 @@ class StereoHandPoseNode(Node):
         self.declare_parameter("world_landmark_sign", [1.0, 1.0, 1.0])
         # Ignore detections below this handedness/detection score.
         self.declare_parameter("min_score", 0.5)
+        # Landmark names (MediaPipe joint names, see JOINT_NAMES) to exclude from
+        # the 2D image-centroid mean that becomes the hand's triangulated 3D
+        # position. Empty -> all 21 landmarks contribute.
+        self.declare_parameter("centroid_filter_list", [""])
         # Calibration world units -> metres (extrinsics mode; stereo mode = 1).
         self.declare_parameter("scale", 0.05)
         self.declare_parameter("joint_size", 0.012)
@@ -152,6 +167,31 @@ class StereoHandPoseNode(Node):
             self.get_parameter("world_landmark_sign").value, dtype=float
         )
         self.min_score = float(self.get_parameter("min_score").value)
+        # Resolve centroid_filter_list -> indices kept for the centroid mean.
+        filter_names = [
+            n for n in self.get_parameter("centroid_filter_list").value if n
+        ]
+        unknown = [n for n in filter_names if n not in JOINT_NAMES]
+        if unknown:
+            self.get_logger().warn(
+                f"centroid_filter_list has unknown landmark names {unknown}; "
+                f"valid names are {JOINT_NAMES}"
+            )
+        filter_set = set(filter_names)
+        self.centroid_idx = [
+            i for i, name in enumerate(JOINT_NAMES) if name not in filter_set
+        ]
+        if not self.centroid_idx:
+            self.get_logger().warn(
+                "centroid_filter_list excludes all landmarks; "
+                "falling back to all 21 for the centroid"
+            )
+            self.centroid_idx = list(range(N_LANDMARKS))
+        if filter_names:
+            self.get_logger().info(
+                f"centroid uses {len(self.centroid_idx)}/{N_LANDMARKS} "
+                f"landmarks; excluded={sorted(filter_set)}"
+            )
         self.scale = float(self.get_parameter("scale").value)
         self.joint_size = float(self.get_parameter("joint_size").value)
         self.line_width = float(self.get_parameter("line_width").value)
@@ -351,8 +391,15 @@ class StereoHandPoseNode(Node):
             img = hand.landmarks_image
             if not img:
                 continue
-            cx = float(np.mean([p.x for p in img]))
-            cy = float(np.mean([p.y for p in img]))
+            # Centroid over only the non-filtered landmarks (centroid_idx). If
+            # the message is missing landmarks for some indices, fall back to
+            # averaging whatever is present.
+            if len(img) == N_LANDMARKS:
+                pts = [img[i] for i in self.centroid_idx]
+            else:
+                pts = list(img)
+            cx = float(np.mean([p.x for p in pts]))
+            cy = float(np.mean([p.y for p in pts]))
             world = None
             if len(hand.landmarks_world) == N_LANDMARKS:
                 world = np.array(
