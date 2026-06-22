@@ -1,0 +1,31 @@
+hot3_data_publisher_node:
+  ros__parameters:
+    # Root folder holding clip subfolders. The repo is bind-mounted at
+    # /workspace inside the container.
+    dataset_root: "/workspace/ros2_ws/recordings"
+
+    # >>> Choose which clip folder to replay here. <<<
+    clip: "clip-001849"
+
+    # HOT3D streams to publish. By default all three Aria cameras:
+    #   1201-1  left  SLAM fisheye  (640x480, grayscale -> mono8)
+    #   1201-2  right SLAM fisheye  (640x480, grayscale -> mono8)
+    #   214-1   middle RGB camera   (1408x1408, color   -> bgr8)
+    # Lists are positionally aligned; trim all four to publish fewer streams.
+    stream_labels: ["1201-1", "1201-2", "214-1"]
+    camera_names: ["camera0", "camera1", "camera2"]
+    encodings: ["mono8", "mono8", "bgr8"]
+    frame_ids: ["camera_1201-1", "camera_1201-2", "camera_214-1"]
+
+    # Per-frame camera pose (T_world_from_camera) is broadcast as
+    # world -> <frame_id> on /tf. Set publish_tf: false to disable.
+    world_frame: "world"
+    publish_tf: true
+
+    frame_rate: 30.0
+    loop: true
+
+    # Playback window: skip to start_frame, then play at most num_frames frames
+    # (num_frames < 0 plays to the end of the clip).
+    start_frame: 0
+    num_frames: -1
