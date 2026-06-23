@@ -1,0 +1,88 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /DepthCloud1
+      Splitter Ratio: 0.5
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.1
+      Plane Cell Count: 20
+      Color: 160; 160; 164
+      Line Style:
+        Value: Lines
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/Image
+      Name: depth (colorized)
+      Enabled: true
+      Topic:
+        Value: /stereo/depth_color
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/Image
+      Name: depth (raw 32FC1)
+      Enabled: false
+      Topic:
+        Value: /stereo/depth
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/Image
+      Name: rectified left
+      Enabled: true
+      Topic:
+        Value: /stereo/image_rect
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/DepthCloud
+      Name: DepthCloud
+      Enabled: true
+      Depth Map Topic: /stereo/depth
+      Depth Map Transport Hint: raw
+      Color Image Topic: /stereo/image_rect
+      Color Transport Hint: raw
+      Queue Size: 5
+      Style: Flat Squares
+      Size (m): 0.005
+      Auto Size:
+        Auto Size Factor: 1
+        Value: false
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: camera0
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 2.0
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0.5
+      Pitch: 0.3
+      Yaw: 0.785
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400
+  Hide Left Dock: false
+  Hide Right Dock: false
