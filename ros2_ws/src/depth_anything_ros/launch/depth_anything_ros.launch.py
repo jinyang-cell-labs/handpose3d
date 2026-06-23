@@ -10,6 +10,7 @@ from launch.substitutions import LaunchConfiguration
 def generate_launch_description():
     pkg_share = get_package_share_directory("depth_anything_ros")
     config_file = os.path.join(pkg_share, "config", "depth_anything_ros.yaml")
+    rviz_config = os.path.join(pkg_share, "config", "depth_anything_ros.rviz")
 
     use_rviz = LaunchConfiguration("rviz")
 
@@ -17,8 +18,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "rviz",
-                default_value="false",
-                description="Launch RViz to view the colorized depth preview",
+                default_value="true",
+                description="Launch RViz to view image_raw, the depth image and the cloud",
             ),
             launch_ros.actions.Node(
                 package="depth_anything_ros",
@@ -32,6 +33,7 @@ def generate_launch_description():
                 executable="rviz2",
                 name="rviz2",
                 output="screen",
+                arguments=["-d", rviz_config],
                 condition=launch.conditions.IfCondition(use_rviz),
             ),
         ]

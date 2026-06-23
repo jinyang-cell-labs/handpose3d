@@ -10,6 +10,29 @@ depth_anything_node:
     depth_color_topic: "depth_anything/depth_color"
     publish_color: true
 
+    # 3D point cloud (sensor_msgs/PointCloud2, XYZ + packed RGB). Pixels are
+    # back-projected with the camera intrinsics and the estimated depth.
+    # NOTE: a geometrically correct, metric cloud requires metric=true below.
+    # With the relative model the depth is unitless inverse-depth, so the cloud
+    # is only a rough structure preview, not true 3D.
+    publish_cloud: true
+    cloud_topic: "depth_anything/points"
+    # Intrinsics source. Empty camera_info_topic -> derived from image_topic
+    # (".../image_raw" -> ".../camera_info"). Or set fx/fy/cx/cy manually
+    # (all > 0) to skip CameraInfo.
+    camera_info_topic: ""
+    fx: 0.0
+    fy: 0.0
+    cx: 0.0
+    cy: 0.0
+    cloud_stride: 2          # subsample: 1=every pixel, 2=1/4 of points, ...
+    cloud_min_range: 0.1     # drop points closer than this (metres)
+    cloud_max_range: 0.0     # 0 -> max_depth when metric, else unbounded
+    # Stamp outputs with this frame instead of the source image's header frame.
+    # Empty preserves the incoming frame_id. Set this to match the RViz Fixed
+    # Frame if the source publishes an empty/awkward frame_id.
+    output_frame: ""
+
     # Vendored Depth-Anything-V2 checkout (repo bind-mounted at /workspace).
     dav2_root: "/workspace/ros2_ws/src/third_party/Depth-Anything-V2"
 
@@ -19,10 +42,13 @@ depth_anything_node:
     #   metric=true  -> true-metre model (metric_depth/checkpoints). Requires a
     #                   per-domain checkpoint (indoor Hypersim / outdoor VKITTI)
     #                   and the matching max_depth (20.0 indoor / 80.0 outdoor).
-    metric: false
+    metric: true
     encoder: "vits"          # vits | vitb | vitl  (vitg not released)
-    checkpoint: ""           # empty -> derived from dav2_root + metric + encoder
-    max_depth: 20.0          # only used when metric=true
+    # Metric checkpoints are named depth_anything_v2_metric_<dataset>_<encoder>,
+    # which differs from the node's default derivation, so set it explicitly.
+    # Indoor (Hypersim) model downloaded into metric_depth/checkpoints.
+    checkpoint: "/workspace/ros2_ws/src/third_party/Depth-Anything-V2/metric_depth/checkpoints/depth_anything_v2_metric_hypersim_vits.pth"
+    max_depth: 20.0          # 20 = Hypersim/indoor; 80 = VKITTI/outdoor
 
     # Inference settings.
     input_size: 518          # multiple of 14; larger = sharper but slower
