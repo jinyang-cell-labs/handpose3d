@@ -58,4 +58,6 @@ recordings/
 # Data Set
 data_set/
 
+third_party/
+
 *.stl
