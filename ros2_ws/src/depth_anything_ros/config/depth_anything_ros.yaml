@@ -2,7 +2,7 @@ depth_anything_node:
   ros__parameters:
     # Input color stream. Default matches the RealSense ROS 2 wrapper
     # (ros-jazzy-realsense2-camera). Remap or override for another source.
-    image_topic: "/camera2/image_raw"
+    image_topic: "/camera1/image_raw"
 
     # Outputs. depth is 32FC1 (relative units, or metres when metric=true);
     # depth_color is a bgr8 preview for RViz.

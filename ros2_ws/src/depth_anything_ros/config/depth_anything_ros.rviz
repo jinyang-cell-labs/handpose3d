@@ -17,7 +17,7 @@ Visualization Manager:
       Name: ImageRaw
       Enabled: true
       Topic:
-        Value: /camera2/image_raw
+        Value: /camera1/image_raw
         Depth: 5
         Durability Policy: Volatile
         Reliability Policy: Best Effort
@@ -53,7 +53,7 @@ Visualization Manager:
       Decay Time: 0
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: world
+    Fixed Frame: camera1_rot
     Frame Rate: 30
   Name: root
   Tools:
