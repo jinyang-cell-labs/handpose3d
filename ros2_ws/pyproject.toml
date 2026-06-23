@@ -16,12 +16,31 @@ dependencies = [
     "empy==3.3.4",
     "numpy<2.0.0",
     "lark==1.2.2",
+    # Depth-Anything-V2 (vendored under src/third_party). The cu124 wheels
+    # bundle their own CUDA runtime + cuDNN, so the image needs NO CUDA toolkit
+    # — only the host NVIDIA driver + container runtime (`--gpus all`). torch
+    # 2.5.1 <-> torchvision 0.20.1 is the matched pair; both pulled from the
+    # pytorch-cu124 index below.
+    "torch==2.5.1",
+    "torchvision==0.20.1",
 ]
 
 [dependency-groups]
 dev = [
     "ruff>=0.1.0",
 ]
+
+# Pull only torch/torchvision from PyTorch's CUDA 12.4 wheel index; everything
+# else stays on PyPI. `explicit = true` means the index is used solely for the
+# packages mapped to it in [tool.uv.sources].
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 [build-system]
 requires = ["setuptools>=68.1.2"]

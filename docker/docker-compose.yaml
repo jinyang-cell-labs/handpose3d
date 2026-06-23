@@ -31,6 +31,17 @@ services:
       - ${XAUTHORITY:-${HOME}/.Xauthority}:/tmp/.Xauthority:ro
       - /dev:/dev
     privileged: true
+    # Expose the host GPU to the container (needed by the Depth-Anything-V2
+    # node). Requires the NVIDIA container runtime / CDI on the host, which is
+    # already configured here (`--gpus all` works). The cu124 torch wheels
+    # bring their own CUDA runtime, so no CUDA toolkit is needed in the image.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     networks:
       - ros2-network
     command: sleep infinity

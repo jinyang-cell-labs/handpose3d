@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>depth_anything_ros</name>
+  <version>0.1.0</version>
+  <description>
+    Real-time monocular depth estimation node wrapping Depth-Anything-V2
+    (vendored under src/third_party). Subscribes to a sensor_msgs/Image color
+    stream, runs the model on the GPU and republishes a 32FC1 depth image
+    (relative depth, or true metres when a metric checkpoint is configured)
+    plus an optional colorized bgr8 preview for RViz.
+  </description>
+  <maintainer email="jinyang@cell-labs.ai">jinyang</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,30 @@
+depth_anything_node:
+  ros__parameters:
+    # Input color stream. Default matches the RealSense ROS 2 wrapper
+    # (ros-jazzy-realsense2-camera). Remap or override for another source.
+    image_topic: "/camera2/image_raw"
+
+    # Outputs. depth is 32FC1 (relative units, or metres when metric=true);
+    # depth_color is a bgr8 preview for RViz.
+    depth_topic: "depth_anything/depth"
+    depth_color_topic: "depth_anything/depth_color"
+    publish_color: true
+
+    # Vendored Depth-Anything-V2 checkout (repo bind-mounted at /workspace).
+    dav2_root: "/workspace/ros2_ws/src/third_party/Depth-Anything-V2"
+
+    # Model selection.
+    #   metric=false -> relative depth model (depth_anything_v2/checkpoints).
+    #                   The vits checkpoint already ships in this repo.
+    #   metric=true  -> true-metre model (metric_depth/checkpoints). Requires a
+    #                   per-domain checkpoint (indoor Hypersim / outdoor VKITTI)
+    #                   and the matching max_depth (20.0 indoor / 80.0 outdoor).
+    metric: false
+    encoder: "vits"          # vits | vitb | vitl  (vitg not released)
+    checkpoint: ""           # empty -> derived from dav2_root + metric + encoder
+    max_depth: 20.0          # only used when metric=true
+
+    # Inference settings.
+    input_size: 518          # multiple of 14; larger = sharper but slower
+    device: "cuda"           # falls back to cpu if CUDA is unavailable
+    colormap: "INFERNO"      # INFERNO | MAGMA | JET | TURBO | VIRIDIS
