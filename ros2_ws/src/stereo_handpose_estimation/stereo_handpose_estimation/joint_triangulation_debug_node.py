@@ -89,6 +89,11 @@ class JointTriangulationDebugNode(Node):
             "extrinsics.yaml",
         )
         self.declare_parameter("use_camera_info_extrinsics", False)
+        # Set true when landmarks come from ALREADY-rectified images
+        # (mediapie_landmarks_extraction enable_rectification=true): the 2D
+        # points are already in the rectified (P) frame and are fed straight to
+        # DLT, skipping the per-point undistort/rectify. Only affects STEREO mode.
+        self.declare_parameter("enable_rectification", False)
         self.declare_parameter("world_frame", "world")
         self.declare_parameter("min_score", 0.5)
         self.declare_parameter("scale", 0.05)
@@ -107,6 +112,9 @@ class JointTriangulationDebugNode(Node):
         self.extrinsics_file = self.get_parameter("extrinsics_file").value
         self.use_camera_info_extrinsics = bool(
             self.get_parameter("use_camera_info_extrinsics").value
+        )
+        self.enable_rectification = bool(
+            self.get_parameter("enable_rectification").value
         )
         self.world_frame = self.get_parameter("world_frame").value
         self.min_score = float(self.get_parameter("min_score").value)
@@ -283,8 +291,13 @@ class JointTriangulationDebugNode(Node):
         """
         n0, n1 = self.camera_names
         if self.mode == "stereo":
-            p0 = self._undistort_point(n0, p0_raw)
-            p1 = self._undistort_point(n1, p1_raw)
+            if self.enable_rectification:
+                # Images were rectified upstream -> points already in the
+                # rectified (P) frame; no per-point undistort/rectify needed.
+                p0, p1 = p0_raw, p1_raw
+            else:
+                p0 = self._undistort_point(n0, p0_raw)
+                p1 = self._undistort_point(n1, p1_raw)
             P0, P1 = self.calib[n0]["p"], self.calib[n1]["p"]
         else:
             p0, p1 = p0_raw, p1_raw

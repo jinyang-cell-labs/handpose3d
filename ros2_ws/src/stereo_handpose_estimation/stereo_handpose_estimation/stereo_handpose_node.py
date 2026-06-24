@@ -121,6 +121,12 @@ class StereoHandPoseNode(Node):
         #          (undistort/rectify with K/D/R/P + the rectified P matrices).
         # false -> raw K + extrinsics.yaml + DLT (no distortion handling).
         self.declare_parameter("use_camera_info_extrinsics", False)
+        # Set true when the upstream landmarks come from ALREADY-rectified images
+        # (mediapie_landmarks_extraction enable_rectification=true). Rectification
+        # is then done once on the image, so the 2D centroids are already in the
+        # rectified (P) frame and are fed straight to DLT — the per-point
+        # undistort/rectify step is skipped. Only affects STEREO mode.
+        self.declare_parameter("enable_rectification", False)
         self.declare_parameter("world_frame", "world")
         # Rotate hand_world_landmarks from the source camera's optical frame
         # into the world frame before adding the triangulated centroid. With
@@ -158,6 +164,9 @@ class StereoHandPoseNode(Node):
         self.extrinsics_file = self.get_parameter("extrinsics_file").value
         self.use_camera_info_extrinsics = bool(
             self.get_parameter("use_camera_info_extrinsics").value
+        )
+        self.enable_rectification = bool(
+            self.get_parameter("enable_rectification").value
         )
         self.world_frame = self.get_parameter("world_frame").value
         self.apply_camera_rotation = bool(
@@ -310,9 +319,14 @@ class StereoHandPoseNode(Node):
                     "Triangulation will be degenerate."
                 )
             else:
+                pre = (
+                    "centroids pre-rectified upstream"
+                    if self.enable_rectification
+                    else "undistort/rectify per centroid"
+                )
                 self.get_logger().info(
                     "Triangulation mode: STEREO from camera_info "
-                    f"(baseline={baseline / P1[0, 0]:.4f} m)."
+                    f"(baseline={baseline / P1[0, 0]:.4f} m, {pre})."
                 )
         else:
             self.mode = "extrinsics"
@@ -416,8 +430,13 @@ class StereoHandPoseNode(Node):
         """Triangulate one 2D centroid correspondence into a 3D world point."""
         n0, n1 = self.camera_names
         if self.mode == "stereo":
-            p0 = self._undistort_point(n0, c0)
-            p1 = self._undistort_point(n1, c1)
+            if self.enable_rectification:
+                # Images were rectified upstream -> centroids already in the
+                # rectified (P) frame; no per-point undistort/rectify needed.
+                p0, p1 = c0, c1
+            else:
+                p0 = self._undistort_point(n0, c0)
+                p1 = self._undistort_point(n1, c1)
             P0, P1 = self.calib[n0]["p"], self.calib[n1]["p"]
         else:
             p0, p1 = c0, c1

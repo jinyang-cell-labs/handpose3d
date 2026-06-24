@@ -12,6 +12,10 @@ joint_triangulation_debug_node:
     # true:  triangulate from camera_info stereo calibration (undistort + rectify).
     # false: extrinsics.yaml + raw K + DLT.
     use_camera_info_extrinsics: true
+    # Must match the upstream mediapie_landmarks_extraction enable_rectification.
+    # true: landmarks already come from rectified images, so the per-point
+    # undistort/rectify is skipped (points fed straight to DLT). STEREO mode only.
+    enable_rectification: true
     world_frame: "world"
 
     # Drop detections below this handedness/detection score.

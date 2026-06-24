@@ -13,6 +13,13 @@ stereo_handpose_node:
     #        rectify with K/D/R/P, baseline from P). extrinsics.yaml ignored.
     # false: use extrinsics.yaml + raw K + DLT (no distortion correction).
     use_camera_info_extrinsics: true
+    # Set true ONLY when the upstream mediapie_landmarks_extraction node runs
+    # with enable_rectification=true, i.e. landmarks already come from rectified
+    # images. The 2D centroids are then in the rectified (P) frame and are fed
+    # straight to DLT — the per-centroid undistort/rectify is skipped (it must
+    # NOT be applied twice). Only affects STEREO mode. Must match the upstream
+    # setting.
+    enable_rectification: true
     world_frame: "world"
 
     # Place hand_world_landmarks correctly in the world frame by rotating them

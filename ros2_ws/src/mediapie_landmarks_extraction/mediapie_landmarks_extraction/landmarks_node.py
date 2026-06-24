@@ -15,9 +15,18 @@ are the model's single-view metric (metres) 3D estimate in a HAND-LOCAL frame
 involved, so the hands carry shape but no absolute world placement. Each
 (camera, hand) skeleton is laid out at a distinct offset so they don't overlap.
 
+Optionally (``enable_rectification``) it undistorts/rectifies each incoming
+frame using the matching ``camera_info`` (plumb_bob K/D/R/P) BEFORE running the
+detector, so the 2D landmarks and annotated image are both in the rectified
+(pinhole) image. Frames are dropped until the camera_info for that stream has
+arrived and its rectify map is built.
+
 Everything is config-driven (see config/mediapie_landmarks_extraction.yaml):
 
     image_topics            list of input sensor_msgs/Image topics
+    enable_rectification    undistort/rectify frames using camera_info first
+    camera_info_topics      optional 1:1 camera_info topics; if empty derived
+                            as <image_topic dirname>/camera_info
     annotated_topics        optional explicit 1:1 output topics; if empty the
                             output topic is <input_topic> + annotated_suffix
     annotated_suffix        suffix appended to each input topic (when no
@@ -40,7 +49,7 @@ from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point, TransformStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import ColorRGBA
 from tf2_ros import StaticTransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
@@ -87,6 +96,13 @@ class LandmarksNode(Node):
         self.declare_parameter("annotated_topics", [""])
         self.declare_parameter("annotated_suffix", "/landmarks/annotated")
         self.declare_parameter("enable_annotation", True)
+
+        # Rectification: undistort/rectify each frame with its camera_info
+        # (plumb_bob K/D/R/P) before detection so landmarks + annotation are in
+        # the rectified pinhole image. camera_info_topics, when empty, are
+        # derived as <image_topic dirname>/camera_info.
+        self.declare_parameter("enable_rectification", False)
+        self.declare_parameter("camera_info_topics", [""])
 
         # Data: publish landmarks (2D image + 3D world), handedness and score
         # as handpose3d_msgs/HandLandmarks, one topic per input image topic
@@ -139,6 +155,29 @@ class LandmarksNode(Node):
             self.annotated_topics = annotated
         else:
             self.annotated_topics = [t + suffix for t in self.image_topics]
+
+        self.enable_rectification = bool(
+            self.get_parameter("enable_rectification").value
+        )
+        if self.enable_rectification:
+            ci = [t for t in self.get_parameter("camera_info_topics").value if t]
+            if ci:
+                if len(ci) != len(self.image_topics):
+                    raise ValueError(
+                        "camera_info_topics, when set, must be 1:1 with "
+                        f"image_topics ({len(ci)} vs {len(self.image_topics)})"
+                    )
+                self.camera_info_topics = ci
+            else:
+                self.camera_info_topics = [
+                    self._derive_camera_info_topic(t) for t in self.image_topics
+                ]
+        else:
+            self.camera_info_topics = []
+        # Per-stream (map1, map2) for cv2.remap and the (w, h) they were built
+        # for; populated lazily when each camera_info arrives.
+        self.rectify_maps = [None] * len(self.image_topics)
+        self._rectify_size = [None] * len(self.image_topics)
 
         self.enable_annotation = bool(self.get_parameter("enable_annotation").value)
         self.enable_landmark_msg = bool(
@@ -200,6 +239,19 @@ class LandmarksNode(Node):
                 )
             )
 
+        # --- camera_info subscriptions for rectification (optional) --------
+        self.info_subs = []
+        if self.enable_rectification:
+            for i, ci_topic in enumerate(self.camera_info_topics):
+                self.info_subs.append(
+                    self.create_subscription(
+                        CameraInfo,
+                        ci_topic,
+                        lambda msg, idx=i: self._on_camera_info(msg, idx),
+                        qos_profile_sensor_data,
+                    )
+                )
+
         # --- 3D world-landmark markers (optional) --------------------------
         self.markers_pub = None
         self.static_tf_broadcaster = None
@@ -219,8 +271,42 @@ class LandmarksNode(Node):
         )
         self.get_logger().info(
             f"mediapie_landmarks_node ready ({self.running_mode} mode, "
-            f"num_hands={self.num_hands}, 3d={self.enable_3d_estimation}, "
+            f"num_hands={self.num_hands}, rectify={self.enable_rectification}, "
+            f"3d={self.enable_3d_estimation}, "
             f"landmark_msg={self.enable_landmark_msg}): {pairs}"
+        )
+
+    @staticmethod
+    def _derive_camera_info_topic(image_topic):
+        """Map an image topic to its conventional camera_info sibling.
+
+        ``camera0/image_raw`` -> ``camera0/camera_info``.
+        """
+        base = image_topic.rsplit("/", 1)[0] if "/" in image_topic else ""
+        return f"{base}/camera_info" if base else "camera_info"
+
+    def _on_camera_info(self, msg, idx):
+        """Build the undistort/rectify map for stream ``idx`` from camera_info.
+
+        Uses plumb_bob K/D, the rectification R and the projection P (the
+        rectified pinhole intrinsics are P[:3, :3]). The map is built once and
+        only rebuilt if the reported image size changes.
+        """
+        size = (msg.width, msg.height)
+        if self.rectify_maps[idx] is not None and self._rectify_size[idx] == size:
+            return
+        K = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+        D = np.array(msg.d, dtype=np.float64)
+        R = np.array(msg.r, dtype=np.float64).reshape(3, 3)
+        new_K = np.array(msg.p, dtype=np.float64).reshape(3, 4)[:, :3]
+        map1, map2 = cv2.initUndistortRectifyMap(
+            K, D, R, new_K, size, cv2.CV_16SC2
+        )
+        self.rectify_maps[idx] = (map1, map2)
+        self._rectify_size[idx] = size
+        self.get_logger().info(
+            f"[{self.image_topics[idx]}] rectify map built from "
+            f"{self.camera_info_topics[idx]} ({size[0]}x{size[1]})"
         )
 
     def _broadcast_world_frame(self):
@@ -262,6 +348,21 @@ class LandmarksNode(Node):
     # --------------------------------------------------------------- callback
     def _on_image(self, msg, idx):
         frame_bgr = self._decode_to_bgr(msg)
+
+        if self.enable_rectification:
+            maps = self.rectify_maps[idx]
+            if maps is None:
+                self.get_logger().warn(
+                    f"[{self.image_topics[idx]}] waiting for camera_info on "
+                    f"{self.camera_info_topics[idx]} before rectifying; "
+                    "dropping frame",
+                    throttle_duration_sec=5.0,
+                )
+                return
+            frame_bgr = cv2.remap(
+                frame_bgr, maps[0], maps[1], cv2.INTER_LINEAR
+            )
+
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         h, w = frame_bgr.shape[:2]
 

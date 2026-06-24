@@ -10,6 +10,16 @@ mediapie_landmarks_node:
     # Master switch: publish the annotated images (false = detect/log only).
     enable_annotation: true
 
+    # -------------------------- rectification -------------------------- #
+    # When true, each incoming frame is undistorted/rectified with its
+    # camera_info (plumb_bob K/D/R/P) BEFORE detection, so the 2D landmarks
+    # and the annotated image are both in the rectified (pinhole) image.
+    # Frames are dropped until the matching camera_info has arrived.
+    # camera_info_topics is 1:1 with image_topics; leave as [""] to auto-derive
+    # each as <image_topic dirname>/camera_info (e.g. camera0/camera_info).
+    enable_rectification: true
+    camera_info_topics: ["camera0/camera_info", "camera1/camera_info"]
+
     # --------------------------- landmark data ------------------------- #
     # Publish landmarks (2D image + 3D world), handedness and confidence as
     # handpose3d_msgs/HandLandmarks, one topic per input image topic
