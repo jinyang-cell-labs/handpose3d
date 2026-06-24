@@ -38,8 +38,14 @@ Inputs
 Outputs
 -------
     stereo_handpose/markers     visualization_msgs/MarkerArray  (RViz skeleton)
-    stereo_handpose/hand_left   geometry_msgs/PoseStamped       (centroid pose)
-    stereo_handpose/hand_right  geometry_msgs/PoseStamped
+    stereo_handpose/hand_left   geometry_msgs/PoseWithCovarianceStamped
+    stereo_handpose/hand_right  geometry_msgs/PoseWithCovarianceStamped
+
+The hand poses carry the triangulated centroid position plus its 3x3 position
+covariance (the 6x6 message's top-left block), obtained by propagating pixel
+noise through the reprojection Jacobian (Cov = sigma_px^2 (J^T J)^-1). Depth is
+typically the least certain axis. Orientation is not estimated -> flagged with a
+large variance.
 """
 
 import os
@@ -49,7 +55,7 @@ import numpy as np
 import rclpy
 import yaml
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Point, PoseStamped, TransformStamped
+from geometry_msgs.msg import Point, PoseWithCovarianceStamped, TransformStamped
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
@@ -63,6 +69,7 @@ from handpose3d_msgs.msg import HandLandmarks
 from stereo_handpose_estimation.triangulation import (
     dlt,
     make_projection_matrix,
+    reprojection_covariance,
     rotation_matrix_to_quaternion,
 )
 
@@ -138,6 +145,12 @@ class StereoHandPoseNode(Node):
         self.declare_parameter("world_landmark_sign", [1.0, 1.0, 1.0])
         # Ignore detections below this handedness/detection score.
         self.declare_parameter("min_score", 0.5)
+        # Per-coordinate pixel-noise std (px) propagated into the published 3D
+        # position covariance (Cov = sigma_px^2 (J^T J)^-1). This is the jitter
+        # of the triangulated *centroid* in the image; measure it from observed
+        # centroid wobble. Do NOT assume sigma_single/sqrt(21) — the 21 landmark
+        # errors are correlated, so the centroid is noisier than that.
+        self.declare_parameter("centroid_pixel_sigma", 0.5)
         # Landmark names (MediaPipe joint names, see JOINT_NAMES) to exclude from
         # the 2D image-centroid mean that becomes the hand's triangulated 3D
         # position. Empty -> all 21 landmarks contribute.
@@ -176,6 +189,9 @@ class StereoHandPoseNode(Node):
             self.get_parameter("world_landmark_sign").value, dtype=float
         )
         self.min_score = float(self.get_parameter("min_score").value)
+        self.centroid_pixel_sigma = float(
+            self.get_parameter("centroid_pixel_sigma").value
+        )
         # Resolve centroid_filter_list -> indices kept for the centroid mean.
         filter_names = [
             n for n in self.get_parameter("centroid_filter_list").value if n
@@ -249,10 +265,10 @@ class StereoHandPoseNode(Node):
         )
         self.hand_pubs = {
             "Left": self.create_publisher(
-                PoseStamped, "stereo_handpose/hand_left", 10
+                PoseWithCovarianceStamped, "stereo_handpose/hand_left", 10
             ),
             "Right": self.create_publisher(
-                PoseStamped, "stereo_handpose/hand_right", 10
+                PoseWithCovarianceStamped, "stereo_handpose/hand_right", 10
             ),
         }
 
@@ -359,18 +375,29 @@ class StereoHandPoseNode(Node):
 
         placed_by_hand = {}
         centroid_by_hand = {}
+        sigma_by_hand = {}
         for label in HAND_LABELS:
             h0 = hands0.get(label)
             h1 = hands1.get(label)
             if h0 is None or h1 is None:
                 continue  # need the hand in both views to triangulate
 
-            # Stereo-triangulate the 2D centroid -> world position (metres).
-            centroid_w = self._triangulate_centroid(h0["centroid"], h1["centroid"])
+            # Stereo-triangulate the 2D centroid -> world position + covariance.
+            centroid_w, cov_w = self._triangulate_centroid(
+                h0["centroid"], h1["centroid"]
+            )
             if not np.all(np.isfinite(centroid_w)):
                 continue
             centroid_m = centroid_w * self.effective_scale
             centroid_by_hand[label] = centroid_m
+            # Scaling the point by s scales its covariance by s^2 (stereo: s=1).
+            cov_m = (
+                cov_w * (self.effective_scale ** 2) if cov_w is not None else None
+            )
+            if cov_m is not None:
+                sigma_by_hand[label] = np.sqrt(
+                    np.clip(np.diag(cov_m), 0.0, None)
+                )
 
             # Place the metric hand shape from the higher-confidence view.
             src, src_idx = (h0, 0) if h0["score"] >= h1["score"] else (h1, 1)
@@ -379,11 +406,16 @@ class StereoHandPoseNode(Node):
                 shape = (R_align @ (src["world"] * self.world_landmark_sign).T).T
                 placed_by_hand[label] = centroid_m + shape
 
-            self._publish_hand_pose(label, centroid_m, src_idx, stamp)
+            self._publish_hand_pose(label, centroid_m, cov_m, src_idx, stamp)
 
+        sig_str = ", ".join(
+            f"{lbl} sigma(x,y,z)="
+            f"({s[0] * 1000:.1f},{s[1] * 1000:.1f},{s[2] * 1000:.1f})mm"
+            for lbl, s in sorted(sigma_by_hand.items())
+        ) or "n/a"
         self.get_logger().info(
             f"cam0={sorted(hands0)} cam1={sorted(hands1)} "
-            f"-> placed {sorted(placed_by_hand)}",
+            f"-> placed {sorted(placed_by_hand)} | {sig_str}",
             throttle_duration_sec=5.0,
         )
         self._publish_markers(placed_by_hand, centroid_by_hand, stamp)
@@ -427,7 +459,14 @@ class StereoHandPoseNode(Node):
         return out
 
     def _triangulate_centroid(self, c0, c1):
-        """Triangulate one 2D centroid correspondence into a 3D world point."""
+        """Triangulate one 2D centroid correspondence into a 3D point + cov.
+
+        Returns ``(point, cov)`` where ``point`` is the (3,) world point and
+        ``cov`` its (3, 3) linearized covariance (pixel noise propagated through
+        the reprojection Jacobian), or ``cov=None`` if degenerate. Both are in
+        the DLT solve frame; the caller scales them to metres by
+        ``effective_scale`` (covariance by its square).
+        """
         n0, n1 = self.camera_names
         if self.mode == "stereo":
             if self.enable_rectification:
@@ -441,7 +480,16 @@ class StereoHandPoseNode(Node):
         else:
             p0, p1 = c0, c1
             P0, P1 = self.P_ext[n0], self.P_ext[n1]
-        return dlt(P0, P1, p0, p1)
+        point = dlt(P0, P1, p0, p1)
+        cov = None
+        if np.all(np.isfinite(point)):
+            # Jacobian depends only on P and the solved point (it reprojects
+            # the point, not the measured pixels), so the same P0/P1 used for
+            # the solve give the consistent covariance in both modes.
+            cov, _ = reprojection_covariance(
+                P0, P1, point, sigma_px=self.centroid_pixel_sigma
+            )
+        return point, cov
 
     def _undistort_point(self, name, pt):
         c = self.calib[name]
@@ -468,18 +516,31 @@ class StereoHandPoseNode(Node):
         return R.T
 
     # ------------------------------------------------------------- publishing
-    def _publish_hand_pose(self, label, centroid_m, src_idx, stamp):
-        msg = PoseStamped()
+    def _publish_hand_pose(self, label, centroid_m, cov_m, src_idx, stamp):
+        msg = PoseWithCovarianceStamped()
         msg.header.frame_id = self.world_frame
         msg.header.stamp = stamp
-        msg.pose.position.x = float(centroid_m[0])
-        msg.pose.position.y = float(centroid_m[1])
-        msg.pose.position.z = float(centroid_m[2])
+        pose = msg.pose.pose
+        pose.position.x = float(centroid_m[0])
+        pose.position.y = float(centroid_m[1])
+        pose.position.z = float(centroid_m[2])
         q = rotation_matrix_to_quaternion(self._world_align_rotation(src_idx))
-        msg.pose.orientation.x = float(q[0])
-        msg.pose.orientation.y = float(q[1])
-        msg.pose.orientation.z = float(q[2])
-        msg.pose.orientation.w = float(q[3])
+        pose.orientation.x = float(q[0])
+        pose.orientation.y = float(q[1])
+        pose.orientation.z = float(q[2])
+        pose.orientation.w = float(q[3])
+
+        # Row-major 6x6 over [x, y, z, rot_x, rot_y, rot_z]. Position block is
+        # the triangulation covariance; orientation is not estimated so its
+        # diagonal is flagged unknown with a large variance (more portable than
+        # the -1 "unknown" convention).
+        cov6 = np.zeros((6, 6), dtype=float)
+        if cov_m is not None and np.all(np.isfinite(cov_m)):
+            cov6[:3, :3] = cov_m
+        else:
+            cov6[0, 0] = cov6[1, 1] = cov6[2, 2] = 1e6  # position unknown
+        cov6[3, 3] = cov6[4, 4] = cov6[5, 5] = 1e6      # orientation unknown
+        msg.pose.covariance = cov6.flatten().tolist()
         self.hand_pubs[label].publish(msg)
 
     def _publish_markers(self, placed_by_hand, centroid_by_hand, stamp):

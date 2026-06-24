@@ -33,6 +33,14 @@ stereo_handpose_node:
     # Drop detections below this handedness/detection score.
     min_score: 0.5
 
+    # Per-coordinate pixel-noise std (px) propagated into the published 3D
+    # position covariance: Cov = sigma_px^2 (J^T J)^-1, J = reprojection
+    # Jacobian. This is the image jitter of the triangulated *centroid*; set it
+    # from observed centroid wobble. NOTE: do not assume sigma_single/sqrt(21) —
+    # the 21 landmark errors are correlated, so the centroid is noisier. Depth
+    # (Z) comes out as the least-certain axis (~Z^2 / (focal*baseline)).
+    centroid_pixel_sigma: 0.5
+
     # Landmark names excluded from the 2D image-centroid mean that becomes the
     # hand's triangulated 3D position. Excluded joints are still drawn in the
     # skeleton (that comes from landmarks_world) — this only affects WHERE the
