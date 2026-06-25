@@ -1,31 +1,26 @@
-"""Publisher node: load a calibration result and publish it.
+"""Publisher node: load the two calibration files and publish them.
 
     ros2 launch calibration_multi_cam publish.launch.py
 
-Publishes, per the original spec:
+Loads `intrinsics_file` (stage 1) and `extrinsics_file` (stage 2) and publishes:
   * intrinsics-only sensor_msgs/CameraInfo on `<camera>/camera_info`
     (K + distortion only; R and P are left empty/zero), latched.
-  * the rig extrinsics as static TF (world -> camera) and as a
+  * the rig extrinsics as static TF (world -> camera) and a
     geometry_msgs/PoseArray on `~/extrinsics`, latched.
 
-The world frame is aligned with the first camera (`world_frame`, default
+The world frame is the first camera (`extrinsics_file: world_frame`, default
 "cam0"); that camera's pose is identity, so no TF is emitted for it.
 
-Expected `result_file` schema (written by the solver)::
-
+File schemas
+------------
+intrinsics_file::
+    cameras:
+      cam0: {model, resolution: [w,h], intrinsics: [fx,fy,cx,cy], distortion: [k1,k2,p1,p2]}
+extrinsics_file::
     world_frame: cam0
     cameras:
-      cam0:
-        model: pinhole-radtan
-        resolution: [w, h]
-        intrinsics: [fx, fy, cx, cy]
-        distortion: [k1, k2, p1, p2]
-        T_world_cam:                # 4x4 pose of the camera in the world frame
-          - [1,0,0,0]
-          - [0,1,0,0]
-          - [0,0,1,0]
-          - [0,0,0,1]
-      cam1: {...}
+      cam0: {T_world_cam: 4x4}     # identity for the world camera
+      cam1: {T_world_cam: 4x4}
 """
 from __future__ import annotations
 
@@ -76,17 +71,20 @@ class PublisherNode(Node):
     def __init__(self):
         super().__init__("calibration_publisher")
 
-        self.result_file = self.declare_parameter(
-            "result_file",
-            "/workspace/ros2_ws/src/calibration_multi_cam/config/calibration_result.yaml",
+        self.intrinsics_file = self.declare_parameter(
+            "intrinsics_file",
+            "/workspace/ros2_ws/src/calibration_multi_cam/config/intrinsics.yaml",
+        ).value
+        self.extrinsics_file = self.declare_parameter(
+            "extrinsics_file",
+            "/workspace/ros2_ws/src/calibration_multi_cam/config/extrinsics.yaml",
         ).value
         self.world_frame_override = self.declare_parameter("world_frame", "").value
         self.publish_camera_info = bool(self.declare_parameter("publish_camera_info", True).value)
         self.publish_tf = bool(self.declare_parameter("publish_tf", True).value)
         self.publish_pose = bool(self.declare_parameter("publish_pose", True).value)
         self.info_template = self.declare_parameter(
-            "camera_info_topic_template", "{camera}/camera_info"
-        ).value
+            "camera_info_topic_template", "{camera}/camera_info").value
 
         self.latching_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.static_tf = StaticTransformBroadcaster(self)
@@ -96,49 +94,50 @@ class PublisherNode(Node):
         self._published = False
         self.timer = self.create_timer(1.0, self._try_publish)
         self.get_logger().info(
-            f"Publisher up; waiting for result_file: {self.result_file}"
-        )
+            f"Publisher up; waiting for\n  intrinsics: {self.intrinsics_file}"
+            f"\n  extrinsics: {self.extrinsics_file}")
 
     def _try_publish(self):
         if self._published:
             return
-        if not os.path.isfile(self.result_file):
+        if not (os.path.isfile(self.intrinsics_file) and os.path.isfile(self.extrinsics_file)):
             return
         try:
-            with open(self.result_file, "r") as fh:
-                result = yaml.safe_load(fh)
-            self._publish(result)
+            with open(self.intrinsics_file, "r") as fh:
+                intrinsics = yaml.safe_load(fh)
+            with open(self.extrinsics_file, "r") as fh:
+                extrinsics = yaml.safe_load(fh)
+            self._publish(intrinsics, extrinsics)
             self._published = True
             self.get_logger().info("Published calibration (CameraInfo + TF/Pose).")
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().error(f"Failed to publish result_file: {exc}")
+            self.get_logger().error(f"Failed to publish calibration: {exc}")
 
-    def _publish(self, result):
-        world_frame = self.world_frame_override or result.get("world_frame", "cam0")
-        cameras = result.get("cameras", {})
+    def _publish(self, intrinsics, extrinsics):
         now = self.get_clock().now().to_msg()
+        intr_cams = intrinsics.get("cameras", {})
+        extr_cams = extrinsics.get("cameras", {})
+        world_frame = self.world_frame_override or extrinsics.get("world_frame", "cam0")
 
-        transforms = []
-        pose_array = PoseArray()
-        pose_array.header.stamp = now
-        pose_array.header.frame_id = world_frame
-
-        for cam, c in cameras.items():
-            T = np.asarray(c["T_world_cam"], dtype=np.float64)
-            R, p = T[:3, :3], T[:3, 3]
-            qx, qy, qz, qw = _mat_to_quat(R)
-
-            # ---- intrinsics-only CameraInfo (no R, no P) ------------------
-            if self.publish_camera_info:
+        # ---- intrinsics-only CameraInfo (no R, no P) ----------------------
+        if self.publish_camera_info:
+            for cam, c in intr_cams.items():
                 info = self._make_camera_info(cam, c, now)
                 if cam not in self.info_pubs:
                     topic = self.info_template.format(camera=cam)
                     self.info_pubs[cam] = self.create_publisher(
-                        CameraInfo, topic, self.latching_qos
-                    )
+                        CameraInfo, topic, self.latching_qos)
                 self.info_pubs[cam].publish(info)
 
-            # ---- extrinsics: TF (skip the world camera itself) -----------
+        # ---- extrinsics: static TF + PoseArray ----------------------------
+        transforms = []
+        pose_array = PoseArray()
+        pose_array.header.stamp = now
+        pose_array.header.frame_id = world_frame
+        for cam, c in extr_cams.items():
+            T = np.asarray(c["T_world_cam"], dtype=np.float64)
+            p = T[:3, 3]
+            qx, qy, qz, qw = _mat_to_quat(T[:3, :3])
             if self.publish_tf and cam != world_frame:
                 tf = TransformStamped()
                 tf.header.stamp = now
@@ -152,8 +151,6 @@ class PublisherNode(Node):
                 tf.transform.rotation.z = float(qz)
                 tf.transform.rotation.w = float(qw)
                 transforms.append(tf)
-
-            # ---- extrinsics: Pose ----------------------------------------
             if self.publish_pose:
                 pose = Pose()
                 pose.position.x = float(p[0])
@@ -174,7 +171,6 @@ class PublisherNode(Node):
         fx, fy, cx, cy = [float(v) for v in c["intrinsics"]]
         dist = [float(v) for v in c.get("distortion", [])]
         w, h = (int(v) for v in c["resolution"])
-
         info = CameraInfo()
         info.header.stamp = stamp
         info.header.frame_id = cam

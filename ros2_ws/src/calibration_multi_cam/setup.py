@@ -24,7 +24,8 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "collector_node = calibration_multi_cam.collector_node:main",
+            "intrinsic_calibrator_node = calibration_multi_cam.intrinsic_calibrator_node:main",
+            "extrinsic_calibrator_node = calibration_multi_cam.extrinsic_calibrator_node:main",
             "publisher_node = calibration_multi_cam.publisher_node:main",
         ],
     },

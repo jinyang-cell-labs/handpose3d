@@ -9,6 +9,39 @@ Algorithm follows ethz-asl/kalibr's `kalibr_calibrate_cameras` pipeline,
 reimplemented on a modern, pure-Python stack (OpenCV + scipy) — no Boost.Python /
 SuiteSparse / catkin. See `../third_party/kalibr` for the reference.
 
+## Two-stage workflow
+
+Intrinsics are a fixed lens property (calibrate once, reuse); extrinsics change
+whenever a camera moves. They also need different board motions. So they are
+split into two stages writing two files, which the publisher then serves.
+
+```bash
+# Stage 1 - intrinsics: fill each camera's frame with the board (per camera)
+ros2 launch calibration_multi_cam intrinsic.launch.py
+ros2 service call /calibration_intrinsic/calibrate std_srvs/srv/Trigger {}     # -> intrinsics.yaml
+
+# Stage 2 - extrinsics: move the board across overlapping views (rig_connected=True)
+ros2 launch calibration_multi_cam extrinsic.launch.py
+ros2 service call /calibration_extrinsic/calibrate std_srvs/srv/Trigger {}     # loads intrinsics.yaml -> extrinsics.yaml
+
+# Publish: intrinsics-only CameraInfo + extrinsics as TF/Pose
+ros2 launch calibration_multi_cam publish.launch.py
+```
+
+Collection is source-agnostic — `ros2 bag play` of recorded image topics works
+exactly like live cameras. Pairs directly with the `multi_cam_stream` package.
+
+### Bounded, diverse collection (keep-most-informative)
+
+Only the extracted corner data is kept (corner ids + subpixel pixel coords),
+never raw images — a view is ~2 KB. Collection is bounded: `max_views_per_camera`
+(intrinsic) and `max_views` (extrinsic) cap the retained set (`0` = unlimited).
+When a buffer is full, an incoming view evicts the **most redundant** stored
+view — the one in the closest pair in an appearance-feature space (board
+position / scale / tilt) — so the kept set stays maximally varied rather than
+filling up with near-duplicates. This is a lightweight stand-in for kalibr's
+information-gain view selection, and it also bounds the bundle-adjustment cost.
+
 ## Output contract (as specified)
 
 - **Intrinsics** → `sensor_msgs/CameraInfo` on `<camera>/camera_info`, carrying
@@ -16,53 +49,42 @@ SuiteSparse / catkin. See `../third_party/kalibr` for the reference.
 - **Extrinsics** → static **TF** (`world → camera`) and a `geometry_msgs/PoseArray`
   on `~/extrinsics`. The world camera's pose is identity (no self-TF emitted).
 
-## Usage
-
-```bash
-# 1. Edit config/calibration.yaml: camera_names, per-camera topics, target dims.
-# 2. Collect (move the board through the cameras' shared field of view):
-ros2 launch calibration_multi_cam calibrate.launch.py
-#    watch the status log for per-camera counts + rig_connected=True
-# 3. Solve + persist:
-ros2 service call /calibration_collector/calibrate std_srvs/srv/Trigger {}
-# 4. Publish the result continuously:
-ros2 launch calibration_multi_cam publish.launch.py
-```
-
-The collector is source-agnostic — `ros2 bag play` of recorded image topics
-works exactly like live cameras (repeatable, offline calibration).
-
-## `result_file` schema (solver → publisher)
+## File schemas
 
 ```yaml
+# intrinsics.yaml  (stage 1 -> stage 2 + publisher)
+cameras:
+  cam0: {model: pinhole-radtan, resolution: [w,h],
+         intrinsics: [fx,fy,cx,cy], distortion: [k1,k2,p1,p2], reproj_rms: 0.21, num_views: 28}
+```
+```yaml
+# extrinsics.yaml  (stage 2 -> publisher)
 world_frame: cam0
 cameras:
-  cam0:
-    model: pinhole-radtan
-    resolution: [width, height]
-    intrinsics: [fx, fy, cx, cy]
-    distortion: [k1, k2, p1, p2]      # radtan -> CameraInfo plumb_bob
-    T_world_cam:                       # 4x4 pose of camera in world (cam0=identity)
-      - [1, 0, 0, 0]
-      - [0, 1, 0, 0]
-      - [0, 0, 1, 0]
-      - [0, 0, 0, 1]
-  cam1: { ... }
+  cam0: {T_world_cam: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}   # identity
+  cam1: {T_world_cam: [[...]]}                                      # pose of cam1 in world
 ```
 
-## Status
+## Modules
 
-| Component | State |
+| File | Role |
 |---|---|
-| `target.py` — AprilGrid geometry + detection (kalibr layout) | ✅ done, unit-tested |
-| `observations.py` — synchronized-view DB | ✅ done, unit-tested |
-| `collector_node.py` — subscribe + sync + detect + accumulate | ✅ done |
-| `publisher_node.py` — intrinsics-only CameraInfo + TF/Pose | ✅ done |
-| `intrinsics.py` — per-camera `cv2.calibrateCamera` / from `camera_info` | ⏳ next |
-| `extrinsics.py` — pairwise PnP + covisibility-graph chaining to cam0 | ⏳ next |
-| `bundle_adjust.py` — global reprojection BA (scipy `least_squares`, Huber) | ⏳ next |
-| `calibrator.py` — orchestrate solve, write `result_file` | ⏳ next |
+| `target.py` | AprilGrid geometry + detection (kalibr layout) |
+| `view_buffer.py` | keep-most-informative retention (maximin diversity thinning) |
+| `observations.py` | synchronized-view database (bounded, diverse) |
+| `se3.py` | SE(3) helpers (Rodrigues, compose, robust average) |
+| `intrinsics.py` | per-camera `cv2.calibrateCamera` (4-param radtan) |
+| `extrinsics.py` | per-view PnP + pairwise relative pose + spanning-tree chaining to cam0 |
+| `bundle_adjust.py` | global reprojection BA (scipy `least_squares`, Huber, intrinsics fixed) |
+| `intrinsic_calibrator_node.py` | stage 1 node |
+| `extrinsic_calibrator_node.py` | stage 2 node |
+| `publisher_node.py` | loads both files; CameraInfo + TF/Pose |
 
-Design decisions: cameras overlap in **adjacent pairs** (graph chaining, not a
-star); intrinsics are **per-camera configurable** (calibrate vs. reuse
-`camera_info`); the bundle-adjust backend is **scipy**.
+The solver is validated end-to-end on synthetic data (known rig → project →
+recover): intrinsics to <0.1%, extrinsics to <0.02 mm / 0.002° after BA.
+
+## Validate when first running on real cameras
+
+- `cv2.aruco` must be available (Ubuntu 24.04 `python3-opencv` includes it).
+- The AprilTag corner permutation `_ARUCO_TO_KALIBR` in `target.py` is the first
+  thing to re-check if reprojection RMS is large/structured.

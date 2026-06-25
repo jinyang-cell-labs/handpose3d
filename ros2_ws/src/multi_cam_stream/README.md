@@ -21,6 +21,13 @@ v4l2-ctl --list-devices        # or: ls /dev/video*
 ros2 launch multi_cam_stream multi_cam_stream.launch.py
 ```
 
+RViz2 opens by default with one Image display per camera so you can see all
+three streams as soon as the node is up. Disable it (e.g. headless) with:
+
+```bash
+ros2 launch multi_cam_stream multi_cam_stream.launch.py rviz:=false
+```
+
 Default topics are `/cam0/image_raw`, `/cam1/image_raw` — matching
 `calibration_multi_cam`'s default `camera_names`, so the two packages compose
 directly:

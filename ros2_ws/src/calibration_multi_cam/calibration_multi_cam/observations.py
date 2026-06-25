@@ -12,19 +12,32 @@ from __future__ import annotations
 
 import numpy as np
 
+from calibration_multi_cam.view_buffer import (
+    multicam_view_features,
+    most_redundant_index,
+)
+
 
 class ObservationDatabase:
-    def __init__(self, camera_names):
+    def __init__(self, camera_names, capacity=None, resolutions=None):
         self.camera_names = list(camera_names)
         # views[i] : {camera_name: (point_ids (M,) int, image_points (M,2) float32)}
         self.views = []
         self.timestamps = []  # float seconds, one per view
+        # keep-most-informative retention: capacity<=0/None -> unbounded
+        self.capacity = int(capacity) if (capacity and capacity > 0) else None
+        self.resolutions = resolutions or {}
+        self._feats = []      # appearance feature per view (only used when capacity set)
 
     # ------------------------------------------------------------------ #
     # Building
     # ------------------------------------------------------------------ #
     def add_view(self, timestamp, detections):
-        """Append a view. `detections` maps camera_name -> (point_ids, image_points)."""
+        """Add a view. `detections` maps camera_name -> (point_ids, image_points).
+
+        When `capacity` is set and the buffer is full, keep-most-informative
+        thinning evicts the most redundant view (maximin diversity) instead of
+        growing without bound. Returns True if the view was stored."""
         clean = {}
         for cam, (pids, pts) in detections.items():
             pids = np.asarray(pids, dtype=np.int64)
@@ -32,9 +45,28 @@ class ObservationDatabase:
             if pids.size == 0:
                 continue
             clean[cam] = (pids, pts)
-        if clean:
+        if not clean:
+            return False
+
+        if self.capacity is None:
             self.views.append(clean)
             self.timestamps.append(float(timestamp))
+            return True
+
+        feat = multicam_view_features(clean, self.camera_names, self.resolutions)
+        if len(self.views) < self.capacity:
+            self.views.append(clean)
+            self.timestamps.append(float(timestamp))
+            self._feats.append(feat)
+            return True
+
+        idx = most_redundant_index(self._feats, feat)
+        if idx == len(self._feats):     # incoming view is the most redundant -> reject
+            return False
+        self.views[idx] = clean         # evict the redundant view
+        self.timestamps[idx] = float(timestamp)
+        self._feats[idx] = feat
+        return True
 
     @property
     def num_views(self):

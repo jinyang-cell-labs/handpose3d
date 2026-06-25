@@ -1,61 +1,65 @@
 # =============================================================================
 #  calibration_multi_cam - central configuration
 #
-#  Applies to BOTH the collector (calibration) and the publisher node via the
-#  ROS 2 wildcard node name "/**".  Each node only reads the parameters it
-#  declares, so the shared block is convenient and harmless.
+#  Shared by all three nodes (intrinsic / extrinsic / publisher) via the ROS 2
+#  wildcard node name "/**". Each node reads only the parameters it declares.
 #
-#  The FIRST camera in `camera_names` defines the world frame (world == cam0).
+#  Workflow:
+#    1. ros2 launch calibration_multi_cam intrinsic.launch.py
+#       -> fill each camera's frame with the board, then
+#          ros2 service call /calibration_intrinsic/calibrate std_srvs/srv/Trigger {}
+#       -> writes intrinsics_file
+#    2. ros2 launch calibration_multi_cam extrinsic.launch.py
+#       -> move the board across overlapping views, then
+#          ros2 service call /calibration_extrinsic/calibrate std_srvs/srv/Trigger {}
+#       -> loads intrinsics_file, writes extrinsics_file
+#    3. ros2 launch calibration_multi_cam publish.launch.py
+#       -> loads both files, publishes CameraInfo + TF/Pose
+#
+#  The FIRST camera in camera_names is the world frame (world == cam0).
 # =============================================================================
 /**:
   ros__parameters:
 
-    # ---- cameras -----------------------------------------------------------
-    # camera_names[0] is the world/origin camera. For each name <c>, the node
-    # reads <c>.topic / <c>.model / <c>.optimize_intrinsics / <c>.camera_info_topic.
+    # ---- cameras (camera_names[0] is the world/origin camera) -------------
     camera_names: ["cam0", "cam1", "cam2"]
-
     cam0.topic: "/cam0/image_raw"
-    cam0.model: "pinhole-radtan"          # only pinhole-radtan implemented for now
-    cam0.optimize_intrinsics: true        # true: calibrate K,D ; false: read from camera_info_topic
-    cam0.camera_info_topic: ""            # used only when optimize_intrinsics: false
-
     cam1.topic: "/cam1/image_raw"
-    cam1.model: "pinhole-radtan"
-    cam1.optimize_intrinsics: true
-    cam1.camera_info_topic: ""
-
     cam2.topic: "/cam2/image_raw"
-    cam2.model: "pinhole-radtan"
-    cam2.optimize_intrinsics: true
-    cam2.camera_info_topic: ""
 
-    # ---- calibration target (ethz-asl/kalibr AprilGrid convention) ---------
+    # ---- calibration target (ethz-asl/kalibr AprilGrid convention) --------
     target.type: "aprilgrid"
-    target.family: "36h11"                # Tag36h11
+    target.family: "36h11"
     target.tag_cols: 6
     target.tag_rows: 6
-    target.tag_size: 0.03                 # tag edge length [m] (measure with a ruler!)
-    target.tag_spacing: 0.333             # inter-tag gap / tag_size  (gap = 0.333 * 0.03 m)
+    target.tag_size: 0.03                 # tag edge length [m] (measure it!)
+    target.tag_spacing: 0.333             # inter-tag gap / tag_size
 
-    # ---- collection --------------------------------------------------------
+    # ---- collection (both stages) -----------------------------------------
+    min_corners_per_camera: 8             # a camera "sees" the target with >= this many corners
+    novelty_min_pixel_motion: 12.0        # only keep a view if corners moved >= this [px]
+    status_period_sec: 3.0
+
+    # intrinsic stage
+    min_views_per_camera: 20              # per-camera views before intrinsics are solvable
+    max_views_per_camera: 80              # keep-most-informative cap per camera (0 = unlimited)
+
+    # extrinsic stage
     sync_slop: 0.02                       # ApproximateTimeSynchronizer tolerance [s]
     sync_queue_size: 20
-    min_corners_per_camera: 8             # a camera "sees" the target with >= this many corners
-    min_cameras_per_view: 2               # accept a view only if >= this many cameras see the target
-    novelty_min_pixel_motion: 12.0        # accept a view only if corners moved >= this [px] vs last accepted
-    min_views: 30                         # status/solve readiness threshold
-    status_period_sec: 3.0                # how often to log collection status
-
-    # ---- optimization (used by the solver, lands next) ---------------------
+    min_cameras_per_view: 2               # keep a view only if >= this many cameras see the board
+    min_views: 30                         # status readiness threshold
+    # Hard cap on retained synchronized views (0 = unlimited). When full, a new
+    # view evicts the most redundant one (maximin diversity), so the kept set
+    # stays varied instead of growing. Solve cost ~ scales with this value.
+    max_views: 150
     robust_loss: "huber"                  # huber | cauchy | soft_l1 | linear
     robust_loss_scale: 1.0                # [px]
 
     # ---- output ------------------------------------------------------------
     world_frame: "cam0"                   # world coordinate == first camera
-    # Files live in the source tree so they survive across container restarts.
-    observations_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/observations.npz"
-    result_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/calibration_result.yaml"
+    intrinsics_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/intrinsics.yaml"
+    extrinsics_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/extrinsics.yaml"
     publish_camera_info: true             # intrinsics-only CameraInfo (no R, no P)
     publish_tf: true                      # static TF world -> cam_i
     publish_pose: true                    # also publish extrinsics as geometry_msgs/PoseArray
