@@ -28,6 +28,8 @@ setup(
         "console_scripts": [
             "stereo_handpose_node = "
             "stereo_handpose_estimation.stereo_handpose_node:main",
+            "hand_ekf_node = "
+            "stereo_handpose_estimation.hand_ekf_node:main",
             "joint_triangulation_debug_node = "
             "stereo_handpose_estimation.joint_triangulation_debug_node:main",
         ],

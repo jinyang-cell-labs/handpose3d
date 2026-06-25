@@ -69,6 +69,27 @@ Key parameters: `use_camera_info_extrinsics` (stereo-from-`camera_info` vs
 if the skeleton renders mirrored), `scale` (calibration units → metres in
 extrinsics mode), `min_score`.
 
+## Smoothing — `hand_ekf_node`
+
+A second node smooths the (jittery, especially in depth) triangulated centroid
+with one constant-velocity Kalman filter per hand. It subscribes to the
+`PoseWithCovarianceStamped` hand poses and republishes filtered ones, **using
+each measurement's covariance `R`** so the Kalman gain down-weights the noisy
+depth axis automatically while tracking the well-constrained lateral axes
+tightly. The motion + measurement models are both linear, so this exact linear
+KF *is* the EKF here (constant Jacobians, no linearisation).
+
+**Subscribes** `stereo_handpose/hand_left` / `_right`
+(`PoseWithCovarianceStamped`).
+**Publishes** `stereo_handpose/hand_left/filtered` / `_right/filtered`
+(`PoseWithCovarianceStamped`) and `stereo_handpose/filtered_markers`
+(green sphere — eyeball it against the raw yellow centroid in RViz).
+
+Config: [`config/hand_ekf.yaml`](config/hand_ekf.yaml). Main knob is
+`process_noise_accel` (smaller → smoother/laggier, larger → more responsive);
+it also does Mahalanobis outlier gating and re-seeds after a tracking gap. It
+launches by default with the launch file (`ekf:=false` to disable).
+
 ## Build & run
 
 ```bash
@@ -78,8 +99,14 @@ source install/setup.bash
 
 # 1) extract landmarks (with the data message enabled)
 ros2 launch mediapie_landmarks_extraction mediapie_landmarks_extraction.launch.py rviz:=false
-# 2) stereo-place them in 3D
+# 2) stereo-place them in 3D (+ EKF smoothing; ekf:=false to disable)
 ros2 launch stereo_handpose_estimation stereo_handpose_estimation.launch.py
+```
+
+ROS-free math tests (filter + covariance) run with the repo venv:
+
+```bash
+python -m pytest ros2_ws/src/stereo_handpose_estimation/test/ -q
 ```
 
 ## Notes / caveats

@@ -45,6 +45,48 @@ Visualization Manager:
         History Policy: Keep Last
       Namespaces:
         {}
+    - Class: rviz_default_plugins/PoseWithCovariance
+      Name: Hand Left (filtered)
+      Enabled: true
+      Topic:
+        Value: /stereo_handpose/hand_left/filtered
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Shape: Axes
+      Axes Length: 0.05
+      Axes Radius: 0.005
+      Covariance:
+        Value: true
+        Position:
+          Value: true
+          Alpha: 0.4
+          Color: 51; 153; 255
+          Scale: 1
+        Orientation:
+          Value: false
+    - Class: rviz_default_plugins/PoseWithCovariance
+      Name: Hand Right (filtered)
+      Enabled: true
+      Topic:
+        Value: /stereo_handpose/hand_right/filtered
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Shape: Axes
+      Axes Length: 0.05
+      Axes Radius: 0.005
+      Covariance:
+        Value: true
+        Position:
+          Value: true
+          Alpha: 0.4
+          Color: 255; 128; 51
+          Scale: 1
+        Orientation:
+          Value: false
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: world

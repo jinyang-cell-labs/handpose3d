@@ -1,0 +1,48 @@
+hand_ekf_node:
+  ros__parameters:
+    # Input hand poses (PoseWithCovarianceStamped) from stereo_handpose_node.
+    hand_topics:
+      - "stereo_handpose/hand_left"
+      - "stereo_handpose/hand_right"
+    # Filtered outputs (1:1 with hand_topics / hand_labels).
+    output_topics:
+      - "stereo_handpose/hand_left/filtered"
+      - "stereo_handpose/hand_right/filtered"
+    hand_labels: ["Left", "Right"]
+    world_frame: "world"
+
+    # Constant-velocity process-noise acceleration density (m/s^2)^2. This is
+    # the main smoothing knob: LARGER -> tracks fast motion, less smoothing;
+    # SMALLER -> smoother and steadier but laggier on quick moves. Tune against
+    # how fast the hand actually moves. ~0.5 balances jitter reduction against
+    # lag on brisk motion (sweep: best moving-target error near here); drop
+    # toward 0.1 for a mostly-static hand, raise for fast gestures.
+    process_noise_accel: 0.5
+    # Initial velocity std (m/s) seeding the filter covariance.
+    init_velocity_sigma: 1.0
+
+    # Scale applied to the incoming measurement covariance R. >1 trusts the
+    # triangulation less (more smoothing); use if the published covariance is
+    # optimistic (e.g. centroid_pixel_sigma set too low upstream).
+    measurement_cov_scale: 1.0
+    # Floor on per-axis measurement std (m): clamps R's diagonal so an
+    # over-confident measurement can't make the filter chase pixel noise.
+    measurement_sigma_floor: 0.0005
+    # Drop measurements whose largest per-axis std exceeds this (m). Catches the
+    # 1e6 "unknown" covariance stereo_handpose_node emits when triangulation
+    # covariance was degenerate, and any grossly uncertain point.
+    max_measurement_sigma: 0.5
+
+    # Mahalanobis outlier gate (chi-square, 3 DOF). Reject measurements farther
+    # than this from the prediction; the prediction is published instead.
+    #   7.81 = 95%, 11.34 = 99%, 16.27 = 99.9%. Set <= 0 to disable gating.
+    mahalanobis_gate: 16.27
+    # Re-seed the filter if no accepted measurement arrives for this long (s),
+    # e.g. the hand left the field of view.
+    reset_timeout: 0.5
+
+    # Publish the filtered centroid as an RViz marker (green sphere) so you can
+    # eyeball it against the raw centroid (yellow) from stereo_handpose_node.
+    publish_markers: true
+    markers_topic: "stereo_handpose/filtered_markers"
+    marker_size: 0.03   # m, sphere diameter
