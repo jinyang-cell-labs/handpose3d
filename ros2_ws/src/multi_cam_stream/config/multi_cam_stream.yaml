@@ -1,0 +1,14 @@
+camera_stream_node:
+  ros__parameters:
+    # One entry per camera. `camera_names` sets the topic namespace
+    # (<name>/image_raw); `camera_devices` are the matching V4L device indices
+    # or paths. Find yours with:  v4l2-ctl --list-devices   (or: ls /dev/video*)
+    camera_names: ["cam0", "cam1"]
+    camera_devices: ["0", "1"]
+
+    frame_rate: 30.0               # publish rate [Hz]
+    capture_width: 1280
+    capture_height: 720
+    # Pixel format requested from the device. Most UVC webcams need "MJPG" to
+    # reach full resolution/fps (YUYV caps the rate). Set "" to leave as-is.
+    fourcc: "MJPG"

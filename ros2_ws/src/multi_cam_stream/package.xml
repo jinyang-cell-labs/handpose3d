@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>multi_cam_stream</name>
+  <version>0.1.0</version>
+  <description>
+    Minimal multi-USB-camera frontend. Opens one OpenCV VideoCapture per V4L
+    device and publishes a sensor_msgs/Image (bgr8) per camera on
+    &lt;name&gt;/image_raw. All cameras are grabbed on one timer tick and share a
+    single timestamp so a downstream ApproximateTimeSynchronizer (e.g.
+    calibration_multi_cam) pairs them cleanly. No camera_info, no file replay.
+  </description>
+  <maintainer email="jinyang@cell-labs.ai">jinyang</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
