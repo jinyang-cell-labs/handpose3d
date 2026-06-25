@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>calibration_multi_cam</name>
+  <version>0.1.0</version>
+  <description>
+    Multi-camera intrinsic + extrinsic calibration for ROS 2. Subscribes to a
+    set of camera image topics defined in a central YAML, detects an AprilGrid
+    target (kalibr-compatible layout), and solves per-camera intrinsics plus the
+    rig extrinsics. The world frame is aligned with the first camera. Results
+    are published as intrinsics-only sensor_msgs/CameraInfo (no R/P) and as the
+    extrinsics over TF (and PoseArray). Algorithm follows ethz-asl/kalibr's
+    kalibr_calibrate_cameras pipeline, reimplemented on OpenCV + scipy.
+  </description>
+  <maintainer email="jinyang@cell-labs.ai">jinyang</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
