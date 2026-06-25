@@ -1,19 +1,20 @@
 camera_publisher_node:
   ros__parameters:
     # "video" replays files; "camera" opens live V4L devices.
-    source_type: "video"
+    source_type: "camera"
     video_paths:
       - "/workspace/media/cam0_test.mp4"
       - "/workspace/media/cam1_test.mp4"
-    camera_devices: ["0", "1"]
+    camera_devices: ["2", "4"]
     camera_names: ["camera0", "camera1"]
     camera_info_urls:
       - "package://vision_interfaces/config/camera_info/camera0.yaml"
       - "package://vision_interfaces/config/camera_info/camera1.yaml"
     frame_rate: 30.0
-    # The handpose3d calibration was computed on a centre-cropped square frame;
-    # keep this on so the published image matches the camera_info intrinsics.
-    crop_square: true
+    # Publish the full sensor frame (no square crop). The camera_info files were
+    # converted to full-frame intrinsics (principal point cx shifted by the old
+    # 280px horizontal crop offset) so they still match the 1280x720 image.
+    crop_square: false
     output_size: 720
     capture_width: 1280
     capture_height: 720

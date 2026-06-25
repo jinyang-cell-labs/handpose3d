@@ -157,8 +157,50 @@ class CameraPublisherNode(Node):
             # Numeric strings -> device index, otherwise treat as a device path.
             dev = int(source) if str(source).isdigit() else source
             cap = cv2.VideoCapture(dev)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_height)
+
+            def _fourcc_str(val):
+                code = int(val)
+                return "".join(chr((code >> (8 * j)) & 0xFF) for j in range(4))
+
+            self.get_logger().info(
+                f"[{source}] BEFORE set: backend={cap.getBackendName()} "
+                f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+                f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
+                f"fourcc={_fourcc_str(cap.get(cv2.CAP_PROP_FOURCC))} "
+                f"fps={cap.get(cv2.CAP_PROP_FPS):.1f}"
+            )
+
+            ok_w = cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_width)
+            ok_h = cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_height)
+            self.get_logger().info(
+                f"[{source}] requested {self.capture_width}x{self.capture_height} "
+                f"-> set() returned width_ok={ok_w} height_ok={ok_h}"
+            )
+
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.get_logger().info(
+                f"[{source}] AFTER set: {actual_w}x{actual_h} "
+                f"fourcc={_fourcc_str(cap.get(cv2.CAP_PROP_FOURCC))} "
+                f"fps={cap.get(cv2.CAP_PROP_FPS):.1f}"
+            )
+            if (actual_w, actual_h) != (self.capture_width, self.capture_height):
+                self.get_logger().warn(
+                    f"[{source}] RESOLUTION MISMATCH: requested "
+                    f"{self.capture_width}x{self.capture_height} but got "
+                    f"{actual_w}x{actual_h} (V4L2 fell back to a supported mode)"
+                )
+
+            # Confirm what an actual grabbed frame looks like (camera_info /
+            # crop logic keys off this, not the requested values).
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                self.get_logger().info(
+                    f"[{source}] FIRST FRAME shape={frame.shape} "
+                    f"(h={frame.shape[0]}, w={frame.shape[1]})"
+                )
+            else:
+                self.get_logger().warn(f"[{source}] could not grab a test frame")
         if not cap.isOpened():
             self.get_logger().error(f"Failed to open capture source: {source}")
         return cap
