@@ -15,7 +15,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from scipy.optimize import least_squares
-from scipy.sparse import lil_matrix
+from scipy.sparse import csr_matrix, lil_matrix
 
 from calibration_multi_cam import se3
 from calibration_multi_cam.intrinsics import K_from_intrinsics, dist_array
@@ -23,7 +23,8 @@ from calibration_multi_cam.intrinsics import K_from_intrinsics, dist_array
 
 def bundle_adjust(cam_world, board_world, obs_struct, camera_names,
                   intrinsics_by_name, object_points_all,
-                  robust_loss="huber", loss_scale=1.0, verbose=False):
+                  robust_loss="huber", loss_scale=1.0, verbose=False,
+                  max_nfev=200):
     C = len(cam_world)
     V = len(board_world)
     Ks = [K_from_intrinsics(intrinsics_by_name[n]["intrinsics"]) for n in camera_names]
@@ -78,25 +79,49 @@ def bundle_adjust(cam_world, board_world, obs_struct, camera_names,
             k += r.size
         return out
 
-    def jac_sparsity():
-        S = lil_matrix((total_res, n_params), dtype=np.uint8)
+    def jacobian(x):
+        # Analytic sparse Jacobian. For each (cam c, view v) block the residual
+        # depends only on camera c's 6 params and view v's 6 params. The corner
+        # projection's sensitivity to the *composed* pose T_cam_target comes from
+        # cv2.projectPoints (first 6 jacobian columns = d/d[rvec,tvec]); the
+        # composed pose's sensitivity to the cam and board poses comes from
+        # cv2.composeRT (T_cam_target = T_cam_world @ T_world_target, so
+        # composeRT(board, cam) gives T3 = T2@T1). Chain-rule the two.
+        J = lil_matrix((total_res, n_params))
         k = 0
         for (c, v, objp, pix) in blocks:
             m = 2 * len(pix)
-            if c >= 1:
-                S[k:k + m, (c - 1) * 6:(c - 1) * 6 + 6] = 1
             base = n_cam_params + v * 6
-            S[k:k + m, base:base + 6] = 1
+            rv = x[base:base + 3]
+            tv = x[base + 3:base + 6]
+            if c >= 1:
+                cb = (c - 1) * 6
+                rc = x[cb:cb + 3]
+                tc = x[cb + 3:cb + 6]
+            else:
+                rc = np.zeros(3)
+                tc = np.zeros(3)
+            # input1 = board (T_world_target), input2 = cam (T_cam_world)
+            (rct, tct, dr3dr1, dr3dt1, dr3dr2, dr3dt2,
+             dt3dr1, dt3dt1, dt3dr2, dt3dt2) = cv2.composeRT(rv, tv, rc, tc)
+            _proj, Jp = cv2.projectPoints(objp, rct, tct, Ks[c], Ds[c])
+            Jrt = Jp[:, 0:6]                              # d(proj)/d(rct, tct)
+            # d(rct, tct)/d(board params) and /d(cam params), each 6x6
+            Jcb = np.block([[dr3dr1, dr3dt1], [dt3dr1, dt3dt1]])
+            J[k:k + m, base:base + 6] = Jrt @ Jcb
+            if c >= 1:
+                Jcc = np.block([[dr3dr2, dr3dt2], [dt3dr2, dt3dt2]])
+                J[k:k + m, cb:cb + 6] = Jrt @ Jcc
             k += m
-        return S
+        return csr_matrix(J)
 
     x0 = pack()
     rms0 = float(np.sqrt(np.mean(residuals(x0) ** 2)))
 
     result = least_squares(
-        residuals, x0, jac_sparsity=jac_sparsity(), method="trf",
+        residuals, x0, jac=jacobian, method="trf",
         loss=robust_loss, f_scale=float(loss_scale),
-        x_scale="jac", verbose=2 if verbose else 0,
+        x_scale="jac", max_nfev=max_nfev, verbose=2 if verbose else 0,
     )
 
     cams, boards = unpack(result.x)
