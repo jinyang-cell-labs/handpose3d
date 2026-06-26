@@ -2,7 +2,7 @@ mediapie_landmarks_node:
   ros__parameters:
     # ----------------------------- topics ------------------------------ #
     # Input image topics to run hand-landmark detection on.
-    image_topics: ["camera0/image_raw", "camera1/image_raw"]
+    image_topics: ["camera0/image_raw", "camera1/image_raw", "camera2/image_raw"]
     # Explicit 1:1 output topics. Leave as [""] (empty) to auto-derive each
     # output as <input_topic> + annotated_suffix.
     annotated_topics: [""]
@@ -10,15 +10,17 @@ mediapie_landmarks_node:
     # Master switch: publish the annotated images (false = detect/log only).
     enable_annotation: true
 
-    # -------------------------- rectification -------------------------- #
-    # When true, each incoming frame is undistorted/rectified with its
-    # camera_info (plumb_bob K/D/R/P) BEFORE detection, so the 2D landmarks
-    # and the annotated image are both in the rectified (pinhole) image.
+    # -------------------------- undistortion --------------------------- #
+    # When true, each incoming frame is undistorted with its camera_info
+    # intrinsics (plumb_bob K/D only) BEFORE detection, so the 2D landmarks
+    # and the annotated image are both in the undistorted (pinhole) image.
+    # This is pure lens undistortion (R=identity, output intrinsics = K) — it
+    # does NOT rectify, so no stereo R/P (which depend on extrinsics) is used.
     # Frames are dropped until the matching camera_info has arrived.
     # camera_info_topics is 1:1 with image_topics; leave as [""] to auto-derive
     # each as <image_topic dirname>/camera_info (e.g. camera0/camera_info).
-    enable_rectification: true
-    camera_info_topics: ["camera0/camera_info", "camera1/camera_info"]
+    enable_undistortion: true
+    camera_info_topics: ["camera0/camera_info", "camera1/camera_info", "camera2/camera_info"]
 
     # --------------------------- landmark data ------------------------- #
     # Publish landmarks (2D image + 3D world), handedness and confidence as
@@ -55,7 +57,7 @@ mediapie_landmarks_node:
     #   "left_and_right" -> keep both (no handedness-label filtering)
     # NOTE: MediaPipe's Left/Right assumes a non-mirrored image; if the feed is
     # mirrored, "Right" is the person's physical left.
-    hand_filter_mode: "left_and_right"
+    hand_filter_mode: "right_only"
     # Minimum MediaPipe handedness score (Left/Right classification confidence,
     # 0..1) for a detection to be kept. 0.0 keeps every detected hand.
     min_handedness_confidence: 0.0

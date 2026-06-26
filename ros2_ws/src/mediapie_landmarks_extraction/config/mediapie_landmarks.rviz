@@ -53,6 +53,15 @@ Visualization Manager:
         Durability Policy: Volatile
         Reliability Policy: Best Effort
         History Policy: Keep Last
+    - Class: rviz_default_plugins/Image
+      Name: camera2 annotated
+      Enabled: true
+      Topic:
+        Value: /camera2/image_raw/landmarks/annotated
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: world
