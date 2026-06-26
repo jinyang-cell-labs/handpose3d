@@ -1,0 +1,30 @@
+# Button definitions for the gui_service_call GUI.
+#
+# Each entry becomes one button:
+#   label    button text + log/feedback name (required)
+#   service  fully-qualified service name to call (required)
+#   type     service type as pkg/srv/Type (default: std_srvs/srv/Trigger)
+#   group    box the button is placed in (default: "Services")
+#
+# Requests are sent with default field values, which is exactly right for
+# Trigger-style services. Add new repo services here — no code change needed.
+buttons:
+  - label: "Calibrate Intrinsics"
+    service: "/calibration_intrinsic/calibrate"
+    type: "std_srvs/srv/Trigger"
+    group: "Calibration"
+
+  - label: "Calibrate Extrinsics"
+    service: "/calibration_extrinsic/calibrate"
+    type: "std_srvs/srv/Trigger"
+    group: "Calibration"
+
+  - label: "Start Logging"
+    service: "/mediapie_landmarks_node/start_log"
+    type: "std_srvs/srv/Trigger"
+    group: "Landmark Logging"
+
+  - label: "Stop Logging"
+    service: "/mediapie_landmarks_node/stop_log"
+    type: "std_srvs/srv/Trigger"
+    group: "Landmark Logging"

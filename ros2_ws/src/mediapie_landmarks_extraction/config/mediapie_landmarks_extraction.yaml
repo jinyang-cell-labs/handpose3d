@@ -68,3 +68,18 @@ mediapie_landmarks_node:
     # ----------------------------- overlay ----------------------------- #
     line_thickness: 2
     point_radius: 3
+
+    # ----------------------------- logging ----------------------------- #
+    # Service-driven recording of the hand landmarks + session calibration to a
+    # self-contained JSONL file (one meta header line, then one frame record per
+    # processed image). Start/stop a take with std_srvs/Trigger:
+    #   ros2 service call /mediapie_landmarks_node/start_log std_srvs/srv/Trigger {}
+    #   ros2 service call /mediapie_landmarks_node/stop_log  std_srvs/srv/Trigger {}
+    # Intrinsics come from each camera_info topic (subscribed whenever logging or
+    # undistortion is on); extrinsics from extrinsics_file (calibration_multi_cam).
+    enable_logging: true
+    log_dir: "/workspace/ros2_ws/logs"
+    extrinsics_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/extrinsics.yaml"
+    # Per-stream camera name (log key + extrinsics lookup). [""] -> derive from
+    # each image topic's namespace (camera0/image_raw -> camera0).
+    log_camera_names: [""]

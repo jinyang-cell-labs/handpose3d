@@ -82,9 +82,63 @@ All behavior is driven by
 | `min_hand_detection_confidence` / `min_hand_presence_confidence` / `min_tracking_confidence` | MediaPipe thresholds |
 | `running_mode` | `video` (stateful) or `image` (stateless per frame) |
 | `line_thickness` / `point_radius` | overlay drawing |
+| `enable_logging` | create the start/stop log services + capture calibration |
+| `log_dir` | directory the JSONL takes are written to |
+| `extrinsics_file` | `T_world_cam` source (calibration_multi_cam) for the meta |
+| `log_camera_names` | per-stream camera name; `[""]` = derive from topic namespace |
 
 By default the output topic for `camera0/image_raw` is
 `camera0/image_raw/landmarks/annotated`.
+
+## Session logging (service-driven JSONL)
+
+With `enable_logging: true`, the node records the hand landmarks **and** the
+active session calibration to a self-contained file, started/stopped on demand
+via `std_srvs/Trigger` services:
+
+```bash
+ros2 service call /mediapie_landmarks_node/start_log std_srvs/srv/Trigger {}
+# ... perform the motion you want to capture ...
+ros2 service call /mediapie_landmarks_node/stop_log  std_srvs/srv/Trigger {}
+```
+
+Each take is one **JSONL** file (`<log_dir>/handpose_log_<timestamp>.jsonl`):
+
+- **line 1 — `meta`**: schema version, world frame, `joint_names`,
+  `landmarks_undistorted` (true iff `enable_undistortion`), and per camera the
+  `intrinsics` (`K`, `distortion`, `model`, `resolution`, from each
+  `camera_info`) and `T_world_cam` (4×4 cam→world, from `extrinsics_file`).
+  Intrinsics/extrinsics are `null` if their source wasn't available when the
+  take started (a warning is returned in the service response).
+- **lines 2+ — `frame`**: one record per processed image — `camera`,
+  `stamp_ns`, and `hands[]` each carrying `handedness`, `score`,
+  `landmarks_image` (21×[x_px, y_px, z_rel]) and `landmarks_world` (21×metres,
+  hand-local, or `null`). Frames with no hands are still recorded so detection
+  gaps are visible in the timeline.
+
+Writes are flushed per line, so a take survives a crash / `Ctrl-C` (the node
+also closes the file cleanly on shutdown). Records are per-(camera, frame): the
+node detects each stream independently, so re-correlate cameras offline by
+`stamp_ns`.
+
+### Loading in Python
+
+[`scripts/load_handpose_log.py`](scripts/load_handpose_log.py) parses a take and
+stacks one (camera, handedness) into dense NaN-filled arrays:
+
+```python
+from load_handpose_log import load_log, stack_camera
+
+log = load_log("handpose_log_20260626_120000.jsonl")
+K = log.meta["cameras"]["camera0"]["intrinsics"]["K"]      # row-major 3x3
+T = log.meta["cameras"]["camera0"]["T_world_cam"]          # 4x4 cam->world
+
+s = stack_camera(log, "camera0", "Left")
+s["stamp_ns"]  # (T,)        s["image"]  # (T, 21, 3)
+s["score"]     # (T,)        s["world"]  # (T, 21, 3)   NaN where the hand was absent
+```
+
+Or `python3 scripts/load_handpose_log.py <file.jsonl>` prints a summary.
 
 ## Build & run
 

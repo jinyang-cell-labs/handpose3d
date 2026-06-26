@@ -42,11 +42,14 @@ One detector is created per input topic so VIDEO-mode timestamps stay
 independent across streams.
 """
 
+import json
 import os
+import time
 
 import cv2
 import numpy as np
 import rclpy
+import yaml
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point, TransformStamped
 from rclpy.node import Node
@@ -58,6 +61,7 @@ from rclpy.qos import (
 )
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import ColorRGBA
+from std_srvs.srv import Trigger
 from tf2_ros import StaticTransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -78,6 +82,17 @@ HAND_CONNECTIONS = [
     (0, 17),                                 # palm base
 ]
 N_LANDMARKS = 21
+
+# MediaPipe 21-landmark hand model, in index order. Recorded in the log meta so
+# downstream evaluation can name joints without hard-coding the order.
+JOINT_NAMES = [
+    "WRIST",
+    "THUMB_CMC", "THUMB_MCP", "THUMB_IP", "THUMB_TIP",
+    "INDEX_MCP", "INDEX_PIP", "INDEX_DIP", "INDEX_TIP",
+    "MIDDLE_MCP", "MIDDLE_PIP", "MIDDLE_DIP", "MIDDLE_TIP",
+    "RING_MCP", "RING_PIP", "RING_DIP", "RING_TIP",
+    "PINKY_MCP", "PINKY_PIP", "PINKY_DIP", "PINKY_TIP",
+]
 
 # BGR colors for the 2D annotated overlay (OpenCV order), per handedness.
 HAND_BGR = {"Left": (255, 150, 50), "Right": (50, 150, 255)}
@@ -152,6 +167,26 @@ class LandmarksNode(Node):
         self.declare_parameter("line_thickness", 2)
         self.declare_parameter("point_radius", 3)
 
+        # --- session logging (service-driven) ------------------------------
+        # Master switch: create the start_log/stop_log services and capture the
+        # rig calibration (intrinsics from camera_info, extrinsics from
+        # extrinsics_file) so a recording can be started on demand. Each take is
+        # one self-contained JSONL file: a "meta" header line with the
+        # per-camera intrinsics/extrinsics, then one "frame" record per
+        # processed image carrying the 2D + world hand landmarks.
+        self.declare_parameter("enable_logging", True)
+        self.declare_parameter("log_dir", "/workspace/ros2_ws/logs")
+        # Extrinsics (T_world_cam 4x4 per camera) from calibration_multi_cam,
+        # embedded in the log meta. Missing file -> extrinsics logged as null.
+        self.declare_parameter(
+            "extrinsics_file",
+            "/workspace/ros2_ws/src/calibration_multi_cam/config/extrinsics.yaml",
+        )
+        # Per-stream camera name used as the log key and to look up extrinsics.
+        # Empty ([""]) -> derived from each image topic's namespace
+        # (camera0/image_raw -> camera0).
+        self.declare_parameter("log_camera_names", [""])
+
         self.image_topics = [t for t in self.get_parameter("image_topics").value if t]
         if not self.image_topics:
             raise ValueError("image_topics must list at least one input topic")
@@ -171,7 +206,11 @@ class LandmarksNode(Node):
         self.enable_undistortion = bool(
             self.get_parameter("enable_undistortion").value
         )
-        if self.enable_undistortion:
+        self.enable_logging = bool(self.get_parameter("enable_logging").value)
+        # camera_info is needed for undistortion (build remap) and/or logging
+        # (record intrinsics). Subscribe once and share it between both.
+        self.need_camera_info = self.enable_undistortion or self.enable_logging
+        if self.need_camera_info:
             ci = [t for t in self.get_parameter("camera_info_topics").value if t]
             if ci:
                 if len(ci) != len(self.image_topics):
@@ -190,6 +229,28 @@ class LandmarksNode(Node):
         # for; populated lazily when each camera_info arrives.
         self.undistort_maps = [None] * len(self.image_topics)
         self._undistort_size = [None] * len(self.image_topics)
+        # Per-stream intrinsics captured from camera_info (for the log meta):
+        # {K, distortion, model, resolution}.
+        self.intrinsics = [None] * len(self.image_topics)
+
+        # --- logging config / state ----------------------------------------
+        self.log_dir = self.get_parameter("log_dir").value
+        self.extrinsics_file = self.get_parameter("extrinsics_file").value
+        names = [n for n in self.get_parameter("log_camera_names").value if n]
+        if names:
+            if len(names) != len(self.image_topics):
+                raise ValueError(
+                    "log_camera_names, when set, must be 1:1 with image_topics "
+                    f"({len(names)} vs {len(self.image_topics)})"
+                )
+            self.log_camera_names = names
+        else:
+            self.log_camera_names = [
+                self._derive_camera_name(t) for t in self.image_topics
+            ]
+        self._log_file = None     # open file handle while a take is recording
+        self._log_path = None
+        self._log_count = 0       # frame records written this take
 
         self.enable_annotation = bool(self.get_parameter("enable_annotation").value)
         self.enable_landmark_msg = bool(
@@ -281,7 +342,7 @@ class LandmarksNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.info_subs = []
-        if self.enable_undistortion:
+        if self.need_camera_info:
             for i, ci_topic in enumerate(self.camera_info_topics):
                 self.info_subs.append(
                     self.create_subscription(
@@ -291,6 +352,17 @@ class LandmarksNode(Node):
                         latching_qos,
                     )
                 )
+
+        # --- logging services ----------------------------------------------
+        self.start_log_srv = None
+        self.stop_log_srv = None
+        if self.enable_logging:
+            self.start_log_srv = self.create_service(
+                Trigger, "~/start_log", self._on_start_log
+            )
+            self.stop_log_srv = self.create_service(
+                Trigger, "~/stop_log", self._on_stop_log
+            )
 
         # --- 3D world-landmark markers (optional) --------------------------
         self.markers_pub = None
@@ -315,8 +387,14 @@ class LandmarksNode(Node):
             f"@>={self.min_handedness_confidence}, "
             f"undistort={self.enable_undistortion}, "
             f"3d={self.enable_3d_estimation}, "
-            f"landmark_msg={self.enable_landmark_msg}): {pairs}"
+            f"landmark_msg={self.enable_landmark_msg}, "
+            f"logging={self.enable_logging}): {pairs}"
         )
+        if self.enable_logging:
+            self.get_logger().info(
+                "logging ready: call ~/start_log then ~/stop_log "
+                f"(std_srvs/Trigger); files go to {self.log_dir}"
+            )
 
     @staticmethod
     def _derive_camera_info_topic(image_topic):
@@ -327,15 +405,35 @@ class LandmarksNode(Node):
         base = image_topic.rsplit("/", 1)[0] if "/" in image_topic else ""
         return f"{base}/camera_info" if base else "camera_info"
 
-    def _on_camera_info(self, msg, idx):
-        """Build the undistort map for stream ``idx`` from camera_info.
+    @staticmethod
+    def _derive_camera_name(image_topic):
+        """Camera name = the image topic's namespace.
 
-        Pure lens undistortion using plumb_bob K/D only: rectification R is the
-        identity and the output intrinsics are kept at K (no stereo R/P, which
-        would depend on extrinsics). The map is built once and only rebuilt if
-        the reported image size changes.
+        ``camera0/image_raw`` -> ``camera0``; ``/ns/camera0/image_raw`` ->
+        ``camera0``. Used as the log key and to look up extrinsics by name.
+        """
+        base = image_topic.rsplit("/", 1)[0] if "/" in image_topic else image_topic
+        return base.strip("/").rsplit("/", 1)[-1] or image_topic
+
+    def _on_camera_info(self, msg, idx):
+        """Capture intrinsics for stream ``idx`` and (if on) build its undistort map.
+
+        Intrinsics (K, distortion, model, resolution) are stored once for the
+        log meta. For undistortion: pure lens undistortion using plumb_bob K/D
+        only (rectification R = identity, output intrinsics kept at K; no stereo
+        R/P, which would depend on extrinsics). The map is built once and only
+        rebuilt if the reported image size changes.
         """
         size = (msg.width, msg.height)
+        if self.intrinsics[idx] is None:
+            self.intrinsics[idx] = {
+                "K": [float(v) for v in msg.k],
+                "distortion": [float(v) for v in msg.d],
+                "model": (msg.distortion_model or "plumb_bob"),
+                "resolution": [int(msg.width), int(msg.height)],
+            }
+        if not self.enable_undistortion:
+            return
         if (
             self.undistort_maps[idx] is not None
             and self._undistort_size[idx] == size
@@ -431,6 +529,9 @@ class LandmarksNode(Node):
 
         if self.enable_3d_estimation and self.markers_pub is not None:
             self._publish_world_markers(idx, world_hands, msg.header.stamp)
+
+        if self._log_file is not None:
+            self._log_frame(idx, hands, world_hands, scores, msg.header.stamp)
 
     def _detect_hands(self, detector, frame_rgb, idx, width, height):
         """Run the landmarker; return (hands, world_hands, scores).
@@ -629,7 +730,161 @@ class LandmarksNode(Node):
             bgr = arr[:, :, :3]
         return np.ascontiguousarray(bgr)
 
+    # ------------------------------------------------------------- logging
+    def _on_start_log(self, request, response):
+        """Begin a recording take: open a JSONL file and write the meta header."""
+        if self._log_file is not None:
+            response.success = False
+            response.message = f"already logging to {self._log_path}"
+            return response
+        try:
+            os.makedirs(self.log_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(self.log_dir, f"handpose_log_{stamp}.jsonl")
+            meta = self._build_meta()
+            f = open(path, "w")
+            f.write(json.dumps(meta) + "\n")
+            f.flush()
+        except Exception as exc:  # noqa: BLE001
+            response.success = False
+            response.message = f"failed to start log: {exc}"
+            self.get_logger().error(response.message)
+            return response
+        self._log_file = f
+        self._log_path = path
+        self._log_count = 0
+        missing = [
+            self.log_camera_names[i]
+            for i in range(len(self.image_topics))
+            if self.intrinsics[i] is None
+        ]
+        warn = (
+            f" (WARNING: no camera_info yet for {missing}, "
+            "intrinsics logged as null)"
+            if missing
+            else ""
+        )
+        response.success = True
+        response.message = f"logging to {path}{warn}"
+        self.get_logger().info(response.message)
+        return response
+
+    def _on_stop_log(self, request, response):
+        """Finalize the current take: flush and close the JSONL file."""
+        if self._log_file is None:
+            response.success = False
+            response.message = "not currently logging"
+            return response
+        path, count = self._log_path, self._log_count
+        try:
+            self._log_file.flush()
+            self._log_file.close()
+        finally:
+            self._log_file = None
+            self._log_path = None
+        response.success = True
+        response.message = f"wrote {count} frame records to {path}"
+        self.get_logger().info(response.message)
+        return response
+
+    def _build_meta(self):
+        """Assemble the session meta header (calibration + schema)."""
+        extrinsics, world_frame = self._load_extrinsics_for_log()
+        cameras = {}
+        for i, img_topic in enumerate(self.image_topics):
+            name = self.log_camera_names[i]
+            cameras[name] = {
+                "image_topic": img_topic,
+                "landmark_topic": self.landmark_topics[i],
+                "intrinsics": self.intrinsics[i],          # None until camera_info
+                "T_world_cam": extrinsics.get(name),       # None if file missing
+            }
+        return {
+            "type": "meta",
+            "schema_version": 1,
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "world_frame": world_frame,
+            # True when landmarks_image is in the undistorted pinhole image
+            # (enable_undistortion), so consumers know which intrinsics apply.
+            "landmarks_undistorted": self.enable_undistortion,
+            "num_hands": self.num_hands,
+            "joint_names": JOINT_NAMES,
+            "cameras": cameras,
+        }
+
+    def _load_extrinsics_for_log(self):
+        """Load ``T_world_cam`` per camera + world_frame from extrinsics_file.
+
+        Returns ``({name: 4x4 list}, world_frame)``; on a missing/unreadable file
+        returns ``({}, "")`` with a warning rather than failing the take.
+        """
+        path = self.extrinsics_file
+        if not path or not os.path.isfile(path):
+            self.get_logger().warn(
+                f"extrinsics_file '{path}' not found; logging extrinsics as null"
+            )
+            return {}, ""
+        try:
+            with open(path, "r") as fh:
+                data = yaml.safe_load(fh)
+            world_frame = data.get("world_frame", "")
+            ext = {
+                name: [[float(v) for v in row] for row in c["T_world_cam"]]
+                for name, c in data.get("cameras", {}).items()
+            }
+            return ext, world_frame
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"failed to read extrinsics_file: {exc}")
+            return {}, ""
+
+    def _log_frame(self, idx, hands, world_hands, scores, stamp):
+        """Append one processed frame's detections as a JSONL record.
+
+        Written even with zero hands so the timeline records detection gaps.
+        landmarks_image is (21, 3) [x_px, y_px, z_rel]; landmarks_world is
+        (21, 3) metres (hand-local) or null when 3D was unavailable.
+        """
+        stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+        hand_records = []
+        for label, kpts in hands.items():
+            world = world_hands.get(label)
+            hand_records.append({
+                "handedness": label,
+                "score": float(scores.get(label, 0.0)),
+                "landmarks_image": kpts.tolist(),
+                "landmarks_world": world.tolist() if world is not None else None,
+            })
+        record = {
+            "type": "frame",
+            "camera": self.log_camera_names[idx],
+            "stamp_ns": stamp_ns,
+            "hands": hand_records,
+        }
+        try:
+            self._log_file.write(json.dumps(record) + "\n")
+            self._log_count += 1
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(
+                f"log write failed, stopping take: {exc}",
+                throttle_duration_sec=5.0,
+            )
+            try:
+                self._log_file.close()
+            finally:
+                self._log_file = None
+                self._log_path = None
+
     def shutdown(self):
+        if self._log_file is not None:
+            try:
+                self._log_file.flush()
+                self._log_file.close()
+                self.get_logger().info(
+                    f"closed log {self._log_path} ({self._log_count} records)"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            self._log_file = None
         for d in self.detectors:
             d.close()
 
