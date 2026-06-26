@@ -57,7 +57,7 @@ mediapie_landmarks_node:
     #   "left_and_right" -> keep both (no handedness-label filtering)
     # NOTE: MediaPipe's Left/Right assumes a non-mirrored image; if the feed is
     # mirrored, "Right" is the person's physical left.
-    hand_filter_mode: "right_only"
+    hand_filter_mode: "left_only"
     # Minimum MediaPipe handedness score (Left/Right classification confidence,
     # 0..1) for a detection to be kept. 0.0 keeps every detected hand.
     min_handedness_confidence: 0.0

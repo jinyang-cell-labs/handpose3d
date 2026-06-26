@@ -1,7 +1,7 @@
 handpose_depth_node:
   ros__parameters:
     # Exactly TWO of the rig's (three) published cameras to triangulate from.
-    camera_names: ["camera0", "camera2"]
+    camera_names: ["camera0", "camera1"]
 
     # Per-camera topics. Leave empty ([""]) to derive them from camera_names:
     #   image_topics    -> <cam> + image_suffix
