@@ -1,0 +1,52 @@
+handpose_depth_node:
+  ros__parameters:
+    # Exactly TWO of the rig's (three) published cameras to triangulate from.
+    camera_names: ["camera0", "camera2"]
+
+    # Per-camera topics. Leave empty ([""]) to derive them from camera_names:
+    #   image_topics    -> <cam> + image_suffix
+    #   landmark_topics -> <cam> + landmarks_suffix
+    #   camera_info_topics -> <cam>/camera_info
+    image_topics: [""]
+    landmark_topics: [""]
+    camera_info_topics: [""]
+    image_suffix: "/image_raw"
+    landmarks_suffix: "/image_raw/landmarks/hands"
+
+    # Extrinsics from calibration_multi_cam (T_world_cam 4x4 per camera). The
+    # output/world frame is taken from this file's world_frame (the first
+    # camera) unless world_frame below is set non-empty.
+    extrinsics_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/extrinsics.yaml"
+    world_frame: ""
+
+    # Upstream MediaPipe landmarks are already in the undistorted pinhole image
+    # (mediapie_landmarks_extraction enable_undistortion=true): feed them to DLT
+    # directly, reproject without distortion, and undistort image_raw before
+    # overlaying so detection + reprojection share coordinates. Set false only
+    # if the landmarks come from raw/distorted frames.
+    landmarks_undistorted: true
+
+    # Drop detections below this handedness/detection score.
+    min_score: 0.5
+
+    # --- reprojection QA overlay (re-project the 3D joints onto image_raw) ---
+    reproject_overlay: true
+    reprojected_suffix: "/depth/reprojected"
+    # Draw the upstream 2D detection (green hollow dots) under the reprojected
+    # skeleton so the gap = reprojection error; mean error (px) is overlaid too.
+    draw_detected: true
+    line_thickness: 2
+    point_radius: 4
+    # Recent image_raw frames buffered per camera to pair with a (delayed)
+    # landmark message by timestamp, and the max stamp mismatch tolerated (s).
+    image_buffer_size: 30
+    image_match_tol: 0.05
+
+    # --- RViz 3D skeleton ---------------------------------------------------
+    markers_topic: "handpose_depth/markers"
+    joint_size: 0.012     # m, sphere diameter
+    line_width: 0.006     # m, bone thickness
+
+    # ApproximateTimeSynchronizer tolerance for pairing the two landmark msgs.
+    sync_slop: 0.05
+    sync_queue_size: 20
