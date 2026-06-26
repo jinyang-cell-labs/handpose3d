@@ -34,6 +34,7 @@
     target.tag_rows: 6
     target.tag_size: 0.03                 # tag edge length [m] (measure it!)
     target.tag_spacing: 0.333             # inter-tag gap / tag_size
+    target.border_bits: 2                 # black-border width; kalibr_create_target_pdf uses 2
 
     # ---- collection (both stages) -----------------------------------------
     min_corners_per_camera: 8             # a camera "sees" the target with >= this many corners

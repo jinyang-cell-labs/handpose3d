@@ -46,6 +46,7 @@ class IntrinsicCalibratorNode(Node):
             "tag_rows": self.declare_parameter("target.tag_rows", 6).value,
             "tag_size": self.declare_parameter("target.tag_size", 0.03).value,
             "tag_spacing": self.declare_parameter("target.tag_spacing", 0.333).value,
+            "border_bits": self.declare_parameter("target.border_bits", 2).value,
         }
         self.target = AprilGridTarget.from_params(target_params)
 
@@ -65,6 +66,8 @@ class IntrinsicCalibratorNode(Node):
         self.obs = {n: MaximinViewBuffer(self.max_views) for n in self.camera_names}
         self.resolution = {}                                   # name -> (w, h)
         self._last_corners = {}                                # name -> {pid: (x, y)}
+        self._frames = {n: 0 for n in self.camera_names}       # images received
+        self._last_detected = {n: 0 for n in self.camera_names}  # corners last frame
 
         self.subs = []
         for cam in self.camera_names:
@@ -81,14 +84,20 @@ class IntrinsicCalibratorNode(Node):
         )
 
     def _on_image(self, msg, name):
+        self._frames[name] += 1
         if name not in self.resolution:
             self.resolution[name] = (int(msg.width), int(msg.height))
+            self.get_logger().info(
+                f"{name}: first image received ({msg.width}x{msg.height}, "
+                f"encoding={msg.encoding})"
+            )
         try:
             gray = self.bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn(f"{name}: image conversion failed: {exc}")
             return
         pids, pts = self.target.detect(gray)
+        self._last_detected[name] = int(pids.size)
         if pids.size < self.min_corners:
             return
         if not self._is_novel(name, pids, pts):
@@ -111,7 +120,13 @@ class IntrinsicCalibratorNode(Node):
     def _log_status(self):
         counts = {n: len(self.obs[n]) for n in self.camera_names}
         ready = all(c >= self.min_views for c in counts.values())
-        self.get_logger().info(f"views per camera={counts}/{self.min_views} | ready={ready}")
+        frames = {n: self._frames[n] for n in self.camera_names}
+        detected = {n: self._last_detected[n] for n in self.camera_names}
+        self.get_logger().info(
+            f"views per camera={counts}/{self.min_views} | ready={ready} | "
+            f"frames={frames} | corners_last_frame={detected} "
+            f"(need >={self.min_corners})"
+        )
 
     def _on_calibrate(self, request, response):
         result = {"cameras": {}}

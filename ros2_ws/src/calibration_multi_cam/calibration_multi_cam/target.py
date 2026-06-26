@@ -41,30 +41,51 @@ _FAMILY_TO_DICT = {
     "16h5": "DICT_APRILTAG_16h5",
 }
 
-# OpenCV aruco returns a marker's four corners clockwise from the marker's
-# canonical top-left: [TL, TR, BR, BL]. Kalibr indexes a tag's points as
-# [BL, BR, TR, TL]. This maps aruco corner slot -> kalibr corner slot:
-#   aruco TL(0)->kalibr TL(3), TR(1)->TR(2), BR(2)->BR(1), BL(3)->BL(0)
-# The mapping is fixed (AprilTag decoding makes corner order view-invariant).
-# If a calibration shows large/structured reprojection residuals, this is the
-# first thing to re-validate against the physical board.
-_ARUCO_TO_KALIBR = (3, 2, 1, 0)
+# Maps an aruco corner slot (0..3, as returned by detectMarkers) to an index
+# into a tag's kalibr corner tuple [BL, BR, TR, TL] (see tag_point_indices).
+# OpenCV's apriltag dictionary fixes each tag's canonical orientation
+# differently from kalibr's MIT AprilTag detector, so the naive [TL,TR,BR,BL]
+# -> [BL,BR,TR,TL] guess is wrong (gives ~76px reprojection RMS). This ordering
+# was determined empirically with scripts/corr_debug.py, which brute-forces all
+# 8 dihedral orderings against a near-frontal board: (1,0,3,2) wins at ~1.1px
+# homography residual, every other ordering is >40px.
+# Re-validate with corr_debug.py if a calibration shows large/structured RMS.
+_ARUCO_TO_KALIBR = (1, 0, 3, 2)
 
 
 class AprilGridTarget:
     """A kalibr-compatible AprilGrid: 3D object points + a corner detector."""
 
-    def __init__(self, tag_rows, tag_cols, tag_size, tag_spacing, family="36h11"):
+    def __init__(self, tag_rows, tag_cols, tag_size, tag_spacing, family="36h11",
+                 border_bits=2, do_subpix=True, subpix_window=2,
+                 max_subpix_displacement=1.5, min_border_distance=4.0):
         if int(tag_rows) < 1 or int(tag_cols) < 1:
             raise ValueError("tag_rows and tag_cols must be >= 1")
         if float(tag_size) <= 0.0 or float(tag_spacing) <= 0.0:
             raise ValueError("tag_size and tag_spacing must be positive")
+        if int(border_bits) < 1:
+            raise ValueError("border_bits must be >= 1")
 
         self.tag_rows = int(tag_rows)
         self.tag_cols = int(tag_cols)
         self.tag_size = float(tag_size)
         self.tag_spacing = float(tag_spacing)
         self.family = str(family)
+        # Width of the tag's black border in bits. Boards from
+        # kalibr_create_target_pdf use a 2-bit border (kalibr's default
+        # blackTagBorder=2); OpenCV's aruco detector assumes 1 unless told
+        # otherwise, and silently decodes nothing on a 2-bit board.
+        self.border_bits = int(border_bits)
+
+        # Corner-extraction quality filters, mirroring kalibr's
+        # AprilgridOptions (GridCalibrationTargetAprilgrid). These matter for
+        # reprojection RMS: the small subpix window avoids being pulled by
+        # neighbouring tags in the dense grid, and the displacement/border
+        # rejections drop unreliable corners.
+        self.do_subpix = bool(do_subpix)
+        self.subpix_window = int(subpix_window)           # kalibr cv::Size(2,2)
+        self.max_subpix_displacement = float(max_subpix_displacement)  # px^2
+        self.min_border_distance = float(min_border_distance)          # px
 
         self.rows = 2 * self.tag_rows                 # corner rows
         self.cols = 2 * self.tag_cols                 # corner cols
@@ -111,21 +132,29 @@ class AprilGridTarget:
                 f"AprilTag family '{self.family}' is not available in this OpenCV build."
             )
         dict_id = getattr(cv2.aruco, dict_name)
-        refine = getattr(
-            cv2.aruco, "CORNER_REFINE_APRILTAG",
-            getattr(cv2.aruco, "CORNER_REFINE_SUBPIX", 0),
-        )
+        # Leave refinement to our own cv::cornerSubPix in detect(), matching
+        # kalibr exactly (small window + displacement rejection). aruco's
+        # CORNER_REFINE_SUBPIX uses a large default window that gets pulled by
+        # neighbouring tags in the dense grid; CORNER_REFINE_APRILTAG drops many
+        # valid detections (measured 35->18 tags on a full-board frame).
+        refine = getattr(cv2.aruco, "CORNER_REFINE_NONE", 0)
+
+        def _configure(params):
+            params.cornerRefinementMethod = refine
+            # Match the printed board's black-border width (kalibr default 2).
+            params.markerBorderBits = self.border_bits
+
         # OpenCV >= 4.7 exposes the ArucoDetector class; older builds use the
         # functional API. Support both.
         if hasattr(cv2.aruco, "ArucoDetector"):
             dictionary = cv2.aruco.getPredefinedDictionary(dict_id)
             params = cv2.aruco.DetectorParameters()
-            params.cornerRefinementMethod = refine
+            _configure(params)
             self._detector = ("new", cv2.aruco.ArucoDetector(dictionary, params))
         else:  # pragma: no cover - legacy OpenCV path
             dictionary = cv2.aruco.getPredefinedDictionary(dict_id)
             params = cv2.aruco.DetectorParameters_create()
-            params.cornerRefinementMethod = refine
+            _configure(params)
             self._detector = ("old", (dictionary, params))
 
     def detect(self, gray):
@@ -143,24 +172,52 @@ class AprilGridTarget:
             dictionary, params = det
             corners, ids, _ = cv2.aruco.detectMarkers(gray, dictionary, parameters=params)
 
+        empty = (np.empty((0,), dtype=np.int64), np.empty((0, 2), dtype=np.float32))
         if ids is None or len(ids) == 0:
-            return (np.empty((0,), dtype=np.int64),
-                    np.empty((0, 2), dtype=np.float32))
+            return empty
 
+        h, w = gray.shape[:2]
+        d = self.min_border_distance
         point_ids = []
         image_points = []
         for quad, tag_id in zip(corners, ids.flatten()):
             tag_id = int(tag_id)
             if tag_id < 0 or tag_id >= self.num_tags:
                 continue  # a tag from a different board / spurious id
-            pidx = self.tag_point_indices(tag_id)  # [BL, BR, TR, TL]
             q = np.asarray(quad, dtype=np.float32).reshape(4, 2)  # aruco [TL,TR,BR,BL]
+            # Drop the whole tag if any corner is too close to the image border
+            # (kalibr minBorderDistance): such corners are extrapolated/unstable.
+            if d > 0.0 and (
+                np.any(q[:, 0] < d) or np.any(q[:, 0] > w - d)
+                or np.any(q[:, 1] < d) or np.any(q[:, 1] > h - d)
+            ):
+                continue
+            pidx = self.tag_point_indices(tag_id)  # [BL, BR, TR, TL]
             for slot in range(4):
                 point_ids.append(pidx[_ARUCO_TO_KALIBR[slot]])
                 image_points.append(q[slot])
 
-        return (np.asarray(point_ids, dtype=np.int64),
-                np.asarray(image_points, dtype=np.float32))
+        if not point_ids:
+            return empty
+
+        point_ids = np.asarray(point_ids, dtype=np.int64)
+        image_points = np.asarray(image_points, dtype=np.float32)
+
+        # Subpixel refinement + displacement rejection, matching kalibr's
+        # cv::cornerSubPix(win=2x2) followed by the maxSubpixDisplacement2 gate.
+        if self.do_subpix and cv2 is not None:
+            raw = image_points.copy()
+            refined = image_points.reshape(-1, 1, 2).copy()
+            win = (self.subpix_window, self.subpix_window)
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.1)
+            cv2.cornerSubPix(gray, refined, win, (-1, -1), criteria)
+            refined = refined.reshape(-1, 2)
+            disp2 = np.sum((refined - raw) ** 2, axis=1)
+            keep = disp2 <= self.max_subpix_displacement
+            point_ids = point_ids[keep]
+            image_points = refined[keep]
+
+        return (point_ids, image_points.astype(np.float32))
 
     # ------------------------------------------------------------------ #
     # Construction helpers
@@ -179,6 +236,11 @@ class AprilGridTarget:
             tag_size=params["tag_size"],
             tag_spacing=params["tag_spacing"],
             family=params.get("family", "36h11"),
+            border_bits=params.get("border_bits", 2),
+            do_subpix=params.get("do_subpix", True),
+            subpix_window=params.get("subpix_window", 2),
+            max_subpix_displacement=params.get("max_subpix_displacement", 1.5),
+            min_border_distance=params.get("min_border_distance", 4.0),
         )
 
     def __repr__(self):

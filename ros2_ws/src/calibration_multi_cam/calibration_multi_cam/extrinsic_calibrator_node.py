@@ -49,6 +49,7 @@ class ExtrinsicCalibratorNode(Node):
             "tag_rows": self.declare_parameter("target.tag_rows", 6).value,
             "tag_size": self.declare_parameter("target.tag_size", 0.03).value,
             "tag_spacing": self.declare_parameter("target.tag_spacing", 0.333).value,
+            "border_bits": self.declare_parameter("target.border_bits", 2).value,
         }
         self.target = AprilGridTarget.from_params(target_params)
 
