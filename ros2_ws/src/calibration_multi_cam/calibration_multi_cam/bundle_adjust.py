@@ -2,7 +2,7 @@
 
 Minimizes the reprojection error of every observed corner across all cameras
 and views with ``scipy.optimize.least_squares`` (Trust Region Reflective) and a
-robust loss. Camera intrinsics are held fixed (already calibrated); cam0 is
+robust loss. Camera intrinsics are held fixed (already calibrated); camera0 is
 pinned to identity so the world frame stays aligned with the first camera.
 
 Parameter vector: [cam_1 .. cam_{C-1}] (6 each, world->cam) followed by

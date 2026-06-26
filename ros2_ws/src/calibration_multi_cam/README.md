@@ -54,15 +54,15 @@ information-gain view selection, and it also bounds the bundle-adjustment cost.
 ```yaml
 # intrinsics.yaml  (stage 1 -> stage 2 + publisher)
 cameras:
-  cam0: {model: pinhole-radtan, resolution: [w,h],
+  camera0: {model: pinhole-radtan, resolution: [w,h],
          intrinsics: [fx,fy,cx,cy], distortion: [k1,k2,p1,p2], reproj_rms: 0.21, num_views: 28}
 ```
 ```yaml
 # extrinsics.yaml  (stage 2 -> publisher)
-world_frame: cam0
+world_frame: camera0
 cameras:
-  cam0: {T_world_cam: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}   # identity
-  cam1: {T_world_cam: [[...]]}                                      # pose of cam1 in world
+  camera0: {T_world_cam: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}   # identity
+  camera1: {T_world_cam: [[...]]}                                      # pose of camera1 in world
 ```
 
 ## Modules
@@ -74,7 +74,7 @@ cameras:
 | `observations.py` | synchronized-view database (bounded, diverse) |
 | `se3.py` | SE(3) helpers (Rodrigues, compose, robust average) |
 | `intrinsics.py` | per-camera `cv2.calibrateCamera` (4-param radtan) |
-| `extrinsics.py` | per-view PnP + pairwise relative pose + spanning-tree chaining to cam0 |
+| `extrinsics.py` | per-view PnP + pairwise relative pose + spanning-tree chaining to camera0 |
 | `bundle_adjust.py` | global reprojection BA (scipy `least_squares`, Huber, intrinsics fixed) |
 | `intrinsic_calibrator_node.py` | stage 1 node |
 | `extrinsic_calibrator_node.py` | stage 2 node |

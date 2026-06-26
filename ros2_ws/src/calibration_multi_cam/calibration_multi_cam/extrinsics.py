@@ -1,12 +1,12 @@
 """Extrinsic initialization: per-view PnP -> pairwise relative poses ->
-max-weight spanning-tree chaining to cam0.
+max-weight spanning-tree chaining to camera0.
 
-Produces an initial pose for every camera in the cam0 (world) frame, plus an
+Produces an initial pose for every camera in the camera0 (world) frame, plus an
 initial board pose per view, ready for the bundle adjustment. Intrinsics are
 taken as given (already calibrated).
 
 Pose convention (see se3.py): ``T_cam_world`` maps a world point into the
-camera frame. cam0 is the world, so its pose is identity.
+camera frame. camera0 is the world, so its pose is identity.
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def init_extrinsics(views, camera_names, intrinsics_by_name, object_points_all,
 
     Returns
     -------
-    cam_world : list[4x4]            T_cam_world per camera (cam0 = identity)
+    cam_world : list[4x4]            T_cam_world per camera (camera0 = identity)
     board_world : list[4x4]          T_world_target per kept view
     obs_struct : list[list[(cam_idx, pids, pixels)]]   aligned with board_world
     info : dict                      {connected, pair_views, tree_edges, ...}
@@ -129,7 +129,7 @@ def init_extrinsics(views, camera_names, intrinsics_by_name, object_points_all,
     if not obs_struct:
         raise RuntimeError("No multi-camera views with valid PnP; cannot calibrate extrinsics.")
 
-    # average pairwise relatives + spanning-tree chaining to cam0
+    # average pairwise relatives + spanning-tree chaining to camera0
     rel_avg = {k: se3.average_transforms(v) for k, v in rel_samples.items()}
     tree_edges, connected = _max_spanning_tree(C, pair_views)
     if not connected:

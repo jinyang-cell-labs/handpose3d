@@ -9,7 +9,7 @@ AprilGrid simultaneously. Then:
     ros2 service call /calibration_extrinsic/calibrate std_srvs/srv/Trigger {}
 
 runs PnP -> covisibility-graph chaining -> bundle adjustment (intrinsics fixed,
-cam0 = world) and writes `extrinsics_file`.
+camera0 = world) and writes `extrinsics_file`.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class ExtrinsicCalibratorNode(Node):
         super().__init__("calibration_extrinsic")
 
         self.camera_names = list(
-            self.declare_parameter("camera_names", ["cam0", "cam1"]).value
+            self.declare_parameter("camera_names", ["camera0", "camera1"]).value
         )
         topics = [self.declare_parameter(f"{c}.topic", f"/{c}/image_raw").value
                   for c in self.camera_names]
@@ -64,7 +64,7 @@ class ExtrinsicCalibratorNode(Node):
         status_period = float(self.declare_parameter("status_period_sec", 3.0).value)
         self.robust_loss = self.declare_parameter("robust_loss", "huber").value
         self.loss_scale = float(self.declare_parameter("robust_loss_scale", 1.0).value)
-        self.world_frame = self.declare_parameter("world_frame", "cam0").value
+        self.world_frame = self.declare_parameter("world_frame", "camera0").value
         self.intrinsics_file = self.declare_parameter(
             "intrinsics_file",
             "/workspace/ros2_ws/src/calibration_multi_cam/config/intrinsics.yaml",
@@ -152,7 +152,7 @@ class ExtrinsicCalibratorNode(Node):
             f"views={n}/{self.min_views} | pairs[{pair_str}] | rig_connected={connected}")
         if n and not connected:
             self.get_logger().warn(
-                "Cameras not yet linked by shared views; extrinsics can't be chained to cam0.")
+                "Cameras not yet linked by shared views; extrinsics can't be chained to camera0.")
 
     def _on_calibrate(self, request, response):
         if self.obsdb.num_views == 0:

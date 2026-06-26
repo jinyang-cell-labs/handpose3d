@@ -9,18 +9,18 @@ Loads `intrinsics_file` (stage 1) and `extrinsics_file` (stage 2) and publishes:
     geometry_msgs/PoseArray on `~/extrinsics`, latched.
 
 The world frame is the first camera (`extrinsics_file: world_frame`, default
-"cam0"); that camera's pose is identity, so no TF is emitted for it.
+"camera0"); that camera's pose is identity, so no TF is emitted for it.
 
 File schemas
 ------------
 intrinsics_file::
     cameras:
-      cam0: {model, resolution: [w,h], intrinsics: [fx,fy,cx,cy], distortion: [k1,k2,p1,p2]}
+      camera0: {model, resolution: [w,h], intrinsics: [fx,fy,cx,cy], distortion: [k1,k2,p1,p2]}
 extrinsics_file::
-    world_frame: cam0
+    world_frame: camera0
     cameras:
-      cam0: {T_world_cam: 4x4}     # identity for the world camera
-      cam1: {T_world_cam: 4x4}
+      camera0: {T_world_cam: 4x4}     # identity for the world camera
+      camera1: {T_world_cam: 4x4}
 """
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ class PublisherNode(Node):
         now = self.get_clock().now().to_msg()
         intr_cams = intrinsics.get("cameras", {})
         extr_cams = extrinsics.get("cameras", {})
-        world_frame = self.world_frame_override or extrinsics.get("world_frame", "cam0")
+        world_frame = self.world_frame_override or extrinsics.get("world_frame", "camera0")
 
         # ---- intrinsics-only CameraInfo (no R, no P) ----------------------
         if self.publish_camera_info:

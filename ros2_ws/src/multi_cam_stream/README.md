@@ -28,7 +28,7 @@ three streams as soon as the node is up. Disable it (e.g. headless) with:
 ros2 launch multi_cam_stream multi_cam_stream.launch.py rviz:=false
 ```
 
-Default topics are `/cam0/image_raw`, `/cam1/image_raw` — matching
+Default topics are `/camera0/image_raw`, `/camera1/image_raw` — matching
 `calibration_multi_cam`'s default `camera_names`, so the two packages compose
 directly:
 

@@ -33,7 +33,7 @@ class IntrinsicCalibratorNode(Node):
         super().__init__("calibration_intrinsic")
 
         self.camera_names = list(
-            self.declare_parameter("camera_names", ["cam0", "cam1"]).value
+            self.declare_parameter("camera_names", ["camera0", "camera1"]).value
         )
         topics = {}
         for cam in self.camera_names:

@@ -39,7 +39,7 @@ Visualization Manager:
       Axes Radius: 0.01
       Value: true
   Global Options:
-    Fixed Frame: cam0
+    Fixed Frame: camera0
     Background Color: 48; 48; 48
   Tools:
     - Class: rviz_default_plugins/MoveCamera

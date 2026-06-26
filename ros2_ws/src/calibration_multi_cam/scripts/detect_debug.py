@@ -6,7 +6,7 @@ and reports how many AprilTag markers OpenCV's aruco detector finds — trying e
 apriltag family so we can tell a family mismatch from a "detects nothing" problem.
 
     python3 src/calibration_multi_cam/scripts/detect_debug.py
-    python3 src/calibration_multi_cam/scripts/detect_debug.py /cam0/image_raw
+    python3 src/calibration_multi_cam/scripts/detect_debug.py /camera0/image_raw
 """
 import os
 import sys
@@ -79,7 +79,7 @@ class Grab(Node):
 
 
 def main():
-    topics = sys.argv[1:] or ["/cam0/image_raw", "/cam1/image_raw", "/cam2/image_raw"]
+    topics = sys.argv[1:] or ["/camera0/image_raw", "/camera1/image_raw", "/camera2/image_raw"]
     rclpy.init()
     node = Grab(topics)
     print(f"OpenCV {cv2.__version__} — waiting for one frame on {topics} ...")

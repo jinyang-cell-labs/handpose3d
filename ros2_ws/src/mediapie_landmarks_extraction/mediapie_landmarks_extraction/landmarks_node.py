@@ -132,6 +132,9 @@ class LandmarksNode(Node):
         self.declare_parameter("min_hand_detection_confidence", 0.5)
         self.declare_parameter("min_hand_presence_confidence", 0.5)
         self.declare_parameter("min_tracking_confidence", 0.5)
+        # Post-detection filtering on MediaPipe's handedness label/score.
+        self.declare_parameter("hand_filter_mode", "left_and_right")
+        self.declare_parameter("min_handedness_confidence", 0.0)
         # "video" -> detect_for_video (per-stream monotonic timestamps);
         # "image" -> detect (stateless per frame).
         self.declare_parameter("running_mode", "video")
@@ -197,6 +200,25 @@ class LandmarksNode(Node):
         self.hand_spacing = float(self.get_parameter("hand_spacing").value)
         self.model_path = self.get_parameter("model_path").value
         self.num_hands = int(self.get_parameter("num_hands").value)
+        # Handedness filtering: mode selects which labels to keep, threshold
+        # drops detections whose handedness score is too low.
+        self.hand_filter_mode = str(
+            self.get_parameter("hand_filter_mode").value
+        ).lower()
+        allowed_by_mode = {
+            "left_only": {"Left"},
+            "right_only": {"Right"},
+            "left_and_right": {"Left", "Right"},
+        }
+        if self.hand_filter_mode not in allowed_by_mode:
+            raise ValueError(
+                "hand_filter_mode must be one of "
+                f"{sorted(allowed_by_mode)}, got '{self.hand_filter_mode}'"
+            )
+        self.allowed_labels = allowed_by_mode[self.hand_filter_mode]
+        self.min_handedness_confidence = float(
+            self.get_parameter("min_handedness_confidence").value
+        )
         self.running_mode = str(self.get_parameter("running_mode").value).lower()
         self.line_thickness = int(self.get_parameter("line_thickness").value)
         self.point_radius = int(self.get_parameter("point_radius").value)
@@ -271,7 +293,9 @@ class LandmarksNode(Node):
         )
         self.get_logger().info(
             f"mediapie_landmarks_node ready ({self.running_mode} mode, "
-            f"num_hands={self.num_hands}, rectify={self.enable_rectification}, "
+            f"num_hands={self.num_hands}, filter={self.hand_filter_mode}"
+            f"@>={self.min_handedness_confidence}, "
+            f"rectify={self.enable_rectification}, "
             f"3d={self.enable_3d_estimation}, "
             f"landmark_msg={self.enable_landmark_msg}): {pairs}"
         )
@@ -398,6 +422,10 @@ class LandmarksNode(Node):
 
         Label is MediaPipe's handedness category ("Left"/"Right"); if the same
         label is reported twice the higher-confidence detection wins.
+
+        Detections are filtered by ``hand_filter_mode`` (which labels to keep)
+        and ``min_handedness_confidence`` (minimum handedness score) before being
+        returned.
         """
         mp_image = mp.Image(
             image_format=mp.ImageFormat.SRGB,
@@ -417,6 +445,11 @@ class LandmarksNode(Node):
             for h, handed in enumerate(result.handedness):
                 label = handed[0].category_name  # "Left" / "Right"
                 score = handed[0].score
+                # Drop hands excluded by mode or below the handedness threshold.
+                if label not in self.allowed_labels:
+                    continue
+                if score < self.min_handedness_confidence:
+                    continue
                 if label in hands and score <= scores[label]:
                     continue
                 lm_list = result.hand_landmarks[h]

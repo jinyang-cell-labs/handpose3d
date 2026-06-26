@@ -16,16 +16,16 @@
 #    3. ros2 launch calibration_multi_cam publish.launch.py
 #       -> loads both files, publishes CameraInfo + TF/Pose
 #
-#  The FIRST camera in camera_names is the world frame (world == cam0).
+#  The FIRST camera in camera_names is the world frame (world == camera0).
 # =============================================================================
 /**:
   ros__parameters:
 
     # ---- cameras (camera_names[0] is the world/origin camera) -------------
-    camera_names: ["cam0", "cam1", "cam2"]
-    cam0.topic: "/cam0/image_raw"
-    cam1.topic: "/cam1/image_raw"
-    cam2.topic: "/cam2/image_raw"
+    camera_names: ["camera0", "camera1", "camera2"]
+    camera0.topic: "/camera0/image_raw"
+    camera1.topic: "/camera1/image_raw"
+    camera2.topic: "/camera2/image_raw"
 
     # ---- calibration target (ethz-asl/kalibr AprilGrid convention) --------
     target.type: "aprilgrid"
@@ -58,7 +58,7 @@
     robust_loss_scale: 1.0                # [px]
 
     # ---- output ------------------------------------------------------------
-    world_frame: "cam0"                   # world coordinate == first camera
+    world_frame: "camera0"                # world coordinate == first camera
     intrinsics_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/intrinsics.yaml"
     extrinsics_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/extrinsics.yaml"
     publish_camera_info: true             # intrinsics-only CameraInfo (no R, no P)

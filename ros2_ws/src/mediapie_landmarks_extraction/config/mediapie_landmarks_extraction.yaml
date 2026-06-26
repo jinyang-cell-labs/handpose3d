@@ -48,6 +48,17 @@ mediapie_landmarks_node:
     min_hand_detection_confidence: 0.5
     min_hand_presence_confidence: 0.5
     min_tracking_confidence: 0.5
+    # Which hands to keep from the detector output (post-detection filtering on
+    # MediaPipe's handedness label):
+    #   "left_only"      -> keep only hands labeled Left
+    #   "right_only"     -> keep only hands labeled Right
+    #   "left_and_right" -> keep both (no handedness-label filtering)
+    # NOTE: MediaPipe's Left/Right assumes a non-mirrored image; if the feed is
+    # mirrored, "Right" is the person's physical left.
+    hand_filter_mode: "left_and_right"
+    # Minimum MediaPipe handedness score (Left/Right classification confidence,
+    # 0..1) for a detection to be kept. 0.0 keeps every detected hand.
+    min_handedness_confidence: 0.0
     # "video" -> detect_for_video (stateful, per-stream monotonic timestamps);
     # "image" -> detect (stateless per frame).
     running_mode: "video"

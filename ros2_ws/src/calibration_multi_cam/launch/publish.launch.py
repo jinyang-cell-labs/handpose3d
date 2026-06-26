@@ -3,7 +3,7 @@
     ros2 launch calibration_multi_cam publish.launch.py
 
 Loads `result_file` and continuously publishes intrinsics-only CameraInfo
-(latched) plus the rig extrinsics over static TF / PoseArray (world == cam0).
+(latched) plus the rig extrinsics over static TF / PoseArray (world == camera0).
 """
 import os
 

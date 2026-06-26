@@ -31,7 +31,7 @@ class CameraStreamNode(Node):
 
         # --- parameters ----------------------------------------------------
         self.camera_names = list(
-            self.declare_parameter("camera_names", ["cam0", "cam1"]).value
+            self.declare_parameter("camera_names", ["camera0", "camera1"]).value
         )
         camera_devices = list(
             self.declare_parameter("camera_devices", ["0", "1"]).value

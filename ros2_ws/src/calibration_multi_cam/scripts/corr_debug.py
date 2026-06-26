@@ -7,7 +7,7 @@ brute-force the 8 dihedral orderings of each tag's 4 corners and report the
 homography residual of each: the winner (~<1 px) is the mapping target.py should
 use; a 70+ px "best" means object geometry, not ordering, is wrong.
 
-    python3 src/calibration_multi_cam/scripts/corr_debug.py /cam1/image_raw
+    python3 src/calibration_multi_cam/scripts/corr_debug.py /camera1/image_raw
 """
 import sys
 
@@ -85,7 +85,7 @@ class Probe(Node):
 
 
 def main():
-    topic = sys.argv[1] if len(sys.argv) > 1 else "/cam1/image_raw"
+    topic = sys.argv[1] if len(sys.argv) > 1 else "/camera1/image_raw"
     rclpy.init()
     node = Probe(topic)
     print(f"waiting for a full-board frame on {topic} ...")
