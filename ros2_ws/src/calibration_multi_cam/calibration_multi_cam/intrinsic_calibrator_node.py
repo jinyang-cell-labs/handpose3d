@@ -150,7 +150,19 @@ class IntrinsicCalibratorNode(Node):
                 msgs.append(f"{name}: calibration failed ({exc})")
                 continue
             result["cameras"][name] = r
-            msgs.append(f"{name}: rms={r['reproj_rms']:.3f}px ({r['num_views']} views)")
+            rej = r.pop("num_rejected", 0)   # diagnostic only; keep out of the file
+            r.pop("num_corners", None)       # ditto
+            msgs.append(
+                f"{name}: rms={r['reproj_rms']:.3f}px "
+                f"({r['num_views']} views, {rej} corners rejected)"
+            )
+            pv = r.pop("per_view_rms", [])  # diagnostic only; keep out of the file
+            if pv:
+                worst = ", ".join(f"{e:.2f}" for e in pv[:5])
+                self.get_logger().info(
+                    f"{name}: per-view rms median={np.median(pv):.3f} "
+                    f"min={pv[-1]:.3f} max={pv[0]:.3f} | worst5=[{worst}]"
+                )
 
         if not result["cameras"]:
             response.success = False
