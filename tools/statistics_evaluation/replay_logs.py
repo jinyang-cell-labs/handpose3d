@@ -15,6 +15,7 @@ path, the camera pair to triangulate, and the replay speed there.
 import bisect
 import os
 import sys
+from collections import deque
 
 import numpy as np
 
@@ -41,10 +42,14 @@ ENABLE_REPROJECT = True
 # own colour (does not replace it).
 ENABLE_POSE_ESTIMATION = True
 # The single camera the pose is estimated from (needs its 2D + world landmarks).
-POSE_ESTIMATION_SOURCE = "camera0"
+POSE_ESTIMATION_SOURCE = "camera1"
 # Also reproject the estimated-pose hand onto all three cameras' 2D views (in a
 # third colour, distinct from detection and the triangulation reprojection).
 ENABLE_POSE_ESTIMATION_REPROJECT = True
+# Second window: rolling plot of the per-frame deviation between the triangulated
+# and estimated-pose hands — sum over the 21 joints of ||tri - pose||^2 (m^2) —
+# over the most recent DEVIATION_LENGTH frames. Needs ENABLE_POSE_ESTIMATION.
+DEVIATION_LENGTH = 100
 # Loop the replay until the window is closed.
 LOOP = True
 # ===========================================================================
@@ -313,6 +318,43 @@ def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits,
     ax.view_init(elev=elev, azim=azim)
 
 
+def deviation_ssd(J_tri, J_pose):
+    """Sum over the 21 joints of ||tri - pose||^2 (m^2); NaN if no shared joint."""
+    m = np.all(np.isfinite(J_tri), axis=1) & np.all(np.isfinite(J_pose), axis=1)
+    if not m.any():
+        return np.nan
+    return float(np.sum((J_tri[m] - J_pose[m]) ** 2))
+
+
+def draw_deviation(ax, hist, length):
+    """Rolling line plot of per-hand deviation over the last ``length`` frames."""
+    ax.clear()
+    ax.set_xlabel(f"recent frames (newest →, window={length})")
+    ax.set_ylabel(r"$\sum \|tri-pose\|^2$  (m$^2$)")
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, max(length - 1, 1))
+
+    labels = sorted(set().union(*[h.keys() for h in hist])) if hist else []
+    x = np.arange(len(hist))
+    latest, ymax = [], 0.0
+    for label in labels:
+        y = np.array([h.get(label, np.nan) for h in hist], dtype=float)
+        ax.plot(x, y, "-o", ms=3, color=HAND_COLORS.get(label, "#888888"),
+                label=label)
+        if np.isfinite(y).any():
+            ymax = max(ymax, np.nanmax(y))
+        last = next((v for v in reversed(y) if np.isfinite(v)), np.nan)
+        if np.isfinite(last):
+            latest.append(f"{label}={last:.4f}")
+    # Autoscale top to the data currently in the window (bottom pinned at 0).
+    ax.set_ylim(0, max(ymax * 1.1, 0.01))
+    if labels:
+        ax.legend(loc="upper left", fontsize=8)
+    ax.set_title("tri vs pose deviation"
+                 + (f"   latest: {', '.join(latest)}" if latest else ""),
+                 fontsize=9)
+
+
 # --------------------------------------------------------------------- main
 def main():
     if not os.path.isfile(LOG_PATH):
@@ -389,6 +431,13 @@ def main():
     ax2d = [fig.add_subplot(gs[0, i]) for i in range(3)]
     ax3d = fig.add_subplot(gs[1, :], projection="3d")
 
+    # Second window: rolling triangulation-vs-pose deviation (needs both).
+    fig_dev, ax_dev = None, None
+    dev_hist = deque(maxlen=DEVIATION_LENGTH)
+    if ENABLE_POSE_ESTIMATION:
+        fig_dev = plt.figure("deviation", figsize=(7, 3.2))
+        ax_dev = fig_dev.add_subplot(111)
+
     src = POSE_ESTIMATION_SOURCE
 
     def update(step):
@@ -448,7 +497,17 @@ def main():
         draw_hand_3d(ax3d, joints, centers, axes_dirs, cam_names, info, limits3d,
                      pose_by_hand=pose_joints)
 
+        # Deviation between triangulated and estimated-pose hands (per hand
+        # present in both); appended every frame so the timeline is continuous.
+        if ENABLE_POSE_ESTIMATION and ax_dev is not None:
+            dev = {label: deviation_ssd(joints[label], pose_joints[label])
+                   for label in set(joints) & set(pose_joints)}
+            dev_hist.append(dev)
+            draw_deviation(ax_dev, dev_hist, DEVIATION_LENGTH)
+
     fig.tight_layout()
+    if fig_dev is not None:
+        fig_dev.tight_layout()
     plt.show(block=False)
     while plt.fignum_exists(fig.number):
         for step in range(len(timeline)):
@@ -456,6 +515,8 @@ def main():
                 break
             update(step)
             fig.canvas.draw_idle()
+            if fig_dev is not None and plt.fignum_exists(fig_dev.number):
+                fig_dev.canvas.draw_idle()
             pause = dts[step - 1] if step > 0 else 0.03
             plt.pause(float(np.clip(pause, 1e-3, 1.0)))
         if not LOOP:
