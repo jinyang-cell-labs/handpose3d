@@ -18,6 +18,7 @@ import sys
 from collections import deque
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 # ============================ USER CONFIG ==================================
 # Absolute path to the log to replay.
@@ -42,7 +43,7 @@ ENABLE_REPROJECT = True
 # own colour (does not replace it).
 ENABLE_POSE_ESTIMATION = True
 # The single camera the pose is estimated from (needs its 2D + world landmarks).
-POSE_ESTIMATION_SOURCE = "camera1"
+POSE_ESTIMATION_SOURCE = "camera0"
 # Also reproject the estimated-pose hand onto all three cameras' 2D views (in a
 # third colour, distinct from detection and the triangulation reprojection).
 ENABLE_POSE_ESTIMATION_REPROJECT = True
@@ -50,6 +51,10 @@ ENABLE_POSE_ESTIMATION_REPROJECT = True
 # and estimated-pose hands — sum over the 21 joints of ||tri - pose||^2 (m^2) —
 # over the most recent DEVIATION_LENGTH frames. Needs ENABLE_POSE_ESTIMATION.
 DEVIATION_LENGTH = 100
+# Third window: visualise the estimated hand orientation as a 3D coordinate triad
+# (the hand-local X/Y/Z axes in the world frame) + roll/pitch/yaw. Needs
+# ENABLE_POSE_ESTIMATION.
+ENABLE_ORIENTATION_VIEW = True
 # Loop the replay until the window is closed.
 LOOP = True
 # ===========================================================================
@@ -99,6 +104,11 @@ HAND_COLORS = {"Left": "#3399ff", "Right": "#ff8033"}
 REPROJECT_COLOR = "#ff33cc"   # magenta — triangulation reprojected into 2D
 POSE_COLOR = "#2ca02c"        # green — estimated 6-DoF pose (3D + its reprojection)
 CAM_COLORS = ["#e74c3c", "#2ecc71", "#9b59b6", "#f1c40f", "#1abc9c"]
+# Orientation triad: X/Y/Z axis colours, and a fixed world slot per hand so the
+# triads don't jump around as hands appear/disappear.
+ORI_AXIS_COLORS = ("#d62728", "#2ca02c", "#1f77b4")   # X red, Y green, Z blue
+ORI_SLOT = {"Left": np.array([-1.5, 0.0, 0.0]),
+            "Right": np.array([1.5, 0.0, 0.0])}
 
 
 # ----------------------------------------------------------------- geometry
@@ -355,6 +365,36 @@ def draw_deviation(ax, hist, length):
                  fontsize=9)
 
 
+def draw_orientation(ax, rot_by_hand):
+    """Draw the estimated hand orientation as a 3D triad (X red, Y green, Z blue).
+
+    ``rot_by_hand`` maps a hand label to its (3,3) world<-hand rotation; the
+    triad columns are the hand-local axes expressed in the world frame. Each
+    hand sits at a fixed slot so the triads stay put across frames.
+    """
+    elev, azim = ax.elev, ax.azim
+    ax.clear()
+    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+    ax.set_xlim(-3, 3); ax.set_ylim(-1.6, 1.6); ax.set_zlim(-1.6, 1.6)
+    ax.set_box_aspect((6, 3.2, 3.2))
+
+    titles = []
+    for label, R in rot_by_hand.items():
+        c = ORI_SLOT.get(label, np.zeros(3))
+        for k, col in enumerate(ORI_AXIS_COLORS):
+            d = R[:, k]
+            ax.quiver(c[0], c[1], c[2], d[0], d[1], d[2],
+                      color=col, length=1.0, normalize=True, linewidth=2)
+        ax.text(c[0], c[1], c[2] + 1.35, label, ha="center", fontsize=9,
+                color=HAND_COLORS.get(label, "#888888"))
+        rpy = Rotation.from_matrix(R).as_euler("xyz", degrees=True)
+        titles.append(f"{label} rpy=({rpy[0]:+.0f},{rpy[1]:+.0f},{rpy[2]:+.0f})°")
+    ax.set_title("estimated hand orientation  (X=red, Y=green, Z=blue)"
+                 + ("   " + "  |  ".join(titles) if titles else "   (no pose)"),
+                 fontsize=9)
+    ax.view_init(elev=elev, azim=azim)
+
+
 # --------------------------------------------------------------------- main
 def main():
     if not os.path.isfile(LOG_PATH):
@@ -438,6 +478,12 @@ def main():
         fig_dev = plt.figure("deviation", figsize=(7, 3.2))
         ax_dev = fig_dev.add_subplot(111)
 
+    # Third window: estimated hand orientation triad.
+    fig_ori, ax_ori = None, None
+    if ENABLE_POSE_ESTIMATION and ENABLE_ORIENTATION_VIEW:
+        fig_ori = plt.figure("orientation", figsize=(6, 4))
+        ax_ori = fig_ori.add_subplot(111, projection="3d")
+
     src = POSE_ESTIMATION_SOURCE
 
     def update(step):
@@ -457,6 +503,7 @@ def main():
 
         # Monocular 6-DoF pose from the source camera -> hand placed in world.
         pose_joints = {}     # {label: (21,3) world} estimated-pose hand
+        pose_rot = {}        # {label: (3,3) world<-hand rotation}
         pose_info = ""
         if ENABLE_POSE_ESTIMATION:
             for label, d in per_cam.get(src, {}).items():
@@ -467,6 +514,7 @@ def main():
                 if r.success:
                     pose_joints[label] = pose_world_joints(r.T_world_hand,
                                                            d["world"])
+                    pose_rot[label] = r.T_world_hand[:3, :3]
             if pose_joints:
                 pose_info = f"   pose<-{src}: {sorted(pose_joints)}"
 
@@ -505,6 +553,10 @@ def main():
             dev_hist.append(dev)
             draw_deviation(ax_dev, dev_hist, DEVIATION_LENGTH)
 
+        # Estimated orientation triad.
+        if ENABLE_POSE_ESTIMATION and ax_ori is not None:
+            draw_orientation(ax_ori, pose_rot)
+
     fig.tight_layout()
     if fig_dev is not None:
         fig_dev.tight_layout()
@@ -517,6 +569,8 @@ def main():
             fig.canvas.draw_idle()
             if fig_dev is not None and plt.fignum_exists(fig_dev.number):
                 fig_dev.canvas.draw_idle()
+            if fig_ori is not None and plt.fignum_exists(fig_ori.number):
+                fig_ori.canvas.draw_idle()
             pause = dts[step - 1] if step > 0 else 0.03
             plt.pause(float(np.clip(pause, 1e-3, 1.0)))
         if not LOOP:
