@@ -45,7 +45,7 @@ ENABLE_REPROJECT = True
 # own colour (does not replace it).
 ENABLE_POSE_ESTIMATION = True
 # The single camera the pose is estimated from (needs its 2D + world landmarks).
-POSE_ESTIMATION_SOURCE = "camera1"
+POSE_ESTIMATION_SOURCE = "camera0"
 # Also reproject the estimated-pose hand onto all three cameras' 2D views (in a
 # third colour, distinct from detection and the triangulation reprojection).
 ENABLE_POSE_ESTIMATION_REPROJECT = True
@@ -57,6 +57,13 @@ DEVIATION_LENGTH = 100
 # (the hand-local X/Y/Z axes in the world frame) + roll/pitch/yaw. Needs
 # ENABLE_POSE_ESTIMATION.
 ENABLE_ORIENTATION_VIEW = True
+# Derive a 6-DoF WRIST (palm) frame — from the palm landmarks only, ignoring the
+# thumb and finger chains — for both the triangulated and the estimated-pose
+# hand, and draw both as coordinate triads at the wrist in the 3D view (solid =
+# triangulation, dashed = estimated pose). The pose vs triangulation wrist
+# position/orientation gap is shown in the 3D title — a finger-flex-robust
+# validation of the deviation. The pose triad needs ENABLE_POSE_ESTIMATION.
+ENABLE_WRIST_POSE = True
 # Record EVERY frame's tri-vs-pose deviation (not just the rolling DEVIATION_LENGTH
 # window) to a JSON file, together with a snapshot of this config. Written once,
 # up front, over the whole timeline. Needs ENABLE_POSE_ESTIMATION.
@@ -108,6 +115,17 @@ HAND_CONNECTIONS = [
     (0, 17),                                 # palm base
 ]
 N_LANDMARKS = 21
+# Wrist (palm) frame: built from the rigid palm landmarks only — the wrist and
+# the four finger MCPs — deliberately excluding the thumb and the finger chains,
+# which flex independently of the wrist. Origin at the wrist; axes (right-handed):
+#   Y  along the hand  (wrist -> mean of the finger MCPs, toward the fingertips)
+#   Z  palm normal     (across-palm x Y, then orthonormalised)
+#   X  across the palm (Y x Z, completes the frame)
+# The SAME construction is applied to both hands, so the two frames are directly
+# comparable regardless of finger pose.
+WRIST_IDX = 0
+PALM_MCP_IDX = [5, 9, 13, 17]   # INDEX / MIDDLE / RING / PINKY MCP (no thumb)
+WRIST_TRIAD_LEN = 0.05          # metres — drawn length of each wrist-frame axis
 HAND_COLORS = {"Left": "#3399ff", "Right": "#ff8033"}
 REPROJECT_COLOR = "#ff33cc"   # magenta — triangulation reprojected into 2D
 POSE_COLOR = "#2ca02c"        # green — estimated 6-DoF pose (3D + its reprojection)
@@ -226,6 +244,46 @@ def pose_world_joints(T_world_hand, world_model):
     return world_model @ R.T + t
 
 
+def wrist_pose_from_joints(J):
+    """Derive the 6-DoF wrist (palm) frame from a (21,3) hand in world coords.
+
+    Uses only the wrist + the four finger MCPs (see WRIST_IDX / PALM_MCP_IDX), so
+    the frame tracks the rigid palm and is comparable between the triangulated
+    and estimated-pose hands irrespective of finger/thumb pose.
+
+    Returns ``(origin (3,), R (3,3))`` — R's columns are the wrist X/Y/Z axes in
+    the world frame (world<-wrist) — or ``None`` if a needed landmark is missing
+    or the palm is degenerate (collinear).
+    """
+    needed = [WRIST_IDX] + PALM_MCP_IDX
+    if not np.all(np.isfinite(J[needed])):
+        return None
+    wrist = J[WRIST_IDX]
+    y = J[PALM_MCP_IDX].mean(axis=0) - wrist        # along the hand
+    across = J[17] - J[5]                            # pinky MCP - index MCP
+    ny = np.linalg.norm(y)
+    if ny < 1e-9:
+        return None
+    y = y / ny
+    z = np.cross(across, y)                          # palm normal
+    nz = np.linalg.norm(z)
+    if nz < 1e-9:
+        return None
+    z = z / nz
+    x = np.cross(y, z)                               # right-handed completion
+    return wrist, np.column_stack([x, y, z])
+
+
+def wrist_pose_gap(wp_tri, wp_pose):
+    """(pos_mm, angle_deg) between two wrist frames, or (nan, nan) if missing."""
+    if wp_tri is None or wp_pose is None:
+        return float("nan"), float("nan")
+    pos_mm = float(np.linalg.norm(wp_tri[0] - wp_pose[0]) * 1000.0)
+    R_rel = wp_tri[1].T @ wp_pose[1]
+    ang_deg = float(np.degrees(np.linalg.norm(Rotation.from_matrix(R_rel).as_rotvec())))
+    return pos_mm, ang_deg
+
+
 def nearest(stamps, hands, t, tol_ns):
     """Hands dict for the record nearest to t within tol_ns, else {}."""
     if len(stamps) == 0:
@@ -313,12 +371,21 @@ def _skeleton_3d(ax, J, color, style, lw, marker):
                marker=marker, depthshade=False)
 
 
+def _wrist_triad_3d(ax, origin, R, length, dashed, lw):
+    """Draw a wrist frame as three RGB axes (X red, Y green, Z blue) at origin."""
+    ls = "dashed" if dashed else "solid"
+    for k, col in enumerate(ORI_AXIS_COLORS):
+        d = R[:, k] * length
+        ax.quiver(origin[0], origin[1], origin[2], d[0], d[1], d[2],
+                  color=col, linewidth=lw, linestyles=ls, normalize=False,
+                  length=1.0)
+
+
 def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits,
-                 pose_by_hand=None):
+                 pose_by_hand=None, show_wrist=False):
     # Preserve the user's current view orientation across the per-frame clear.
     elev, azim = ax.elev, ax.azim
     ax.clear()
-    ax.set_title(info, fontsize=9)
     ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)"); ax.set_zlabel("Z (m)")
 
     draw_cameras_3d(ax, centers, axes_dirs, names)
@@ -332,6 +399,27 @@ def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits,
         for label, J in pose_by_hand.items():
             _skeleton_3d(ax, J, POSE_COLOR, "--", 1.5, "D")
 
+    # Wrist (palm) frames at the wrist: solid = triangulation, dashed = pose.
+    # The title gains the per-hand pose-vs-tri wrist gap (mm position, ° angle).
+    if show_wrist:
+        gaps = []
+        for label, J in joints_by_hand.items():
+            wp_tri = wrist_pose_from_joints(J)
+            if wp_tri is not None:
+                _wrist_triad_3d(ax, wp_tri[0], wp_tri[1], WRIST_TRIAD_LEN,
+                                dashed=False, lw=2.5)
+            wp_pose = (wrist_pose_from_joints(pose_by_hand[label])
+                       if pose_by_hand and label in pose_by_hand else None)
+            if wp_pose is not None:
+                _wrist_triad_3d(ax, wp_pose[0], wp_pose[1], WRIST_TRIAD_LEN,
+                                dashed=True, lw=2.0)
+            pos_mm, ang_deg = wrist_pose_gap(wp_tri, wp_pose)
+            if np.isfinite(pos_mm):
+                gaps.append(f"{label} Δ{pos_mm:.0f}mm/{ang_deg:.0f}°")
+        if gaps:
+            info += "   wrist[tri vs pose]: " + "  ".join(gaps)
+
+    ax.set_title(info, fontsize=9)
     apply_limits_3d(ax, limits)       # FIXED limits every frame
     ax.view_init(elev=elev, azim=azim)
 
@@ -431,6 +519,7 @@ def _config_snapshot():
         "ENABLE_POSE_ESTIMATION_REPROJECT": ENABLE_POSE_ESTIMATION_REPROJECT,
         "DEVIATION_LENGTH": DEVIATION_LENGTH,
         "ENABLE_ORIENTATION_VIEW": ENABLE_ORIENTATION_VIEW,
+        "ENABLE_WRIST_POSE": ENABLE_WRIST_POSE,
     }
 
 
@@ -445,6 +534,7 @@ def write_deviation_log(timeline, indexed, P, Kmat, Tmat, cam_a, cam_b, src,
     Deviation metric: sum over the 21 joints of ||tri - pose||^2 (m^2).
     """
     records, agg, agg_pj = [], {}, {}
+    agg_wrist = {}          # {label: {"pos_mm": [...], "ang_deg": [...]}}
     total = len(timeline)
     print(f"computing deviation over {total} frames "
           "(PnP per frame, this can take a while)...")
@@ -474,7 +564,7 @@ def write_deviation_log(timeline, indexed, P, Kmat, Tmat, cam_a, cam_b, src,
             r = pe.estimate_hand_pose(Kmat[src], Tmat[src], d["image"], d["world"])
             if r.success:
                 pose[label] = pose_world_joints(r.T_world_hand, d["world"])
-        dev, pj = {}, {}
+        dev, pj, wg = {}, {}, {}
         for label in set(joints) & set(pose):
             d_joint = per_joint_distances(joints[label], pose[label])  # (21,) m
             if not np.isfinite(d_joint).any():
@@ -483,9 +573,18 @@ def write_deviation_log(timeline, indexed, P, Kmat, Tmat, cam_a, cam_b, src,
             pj[label] = _nan_to_none(d_joint)              # per-joint dist (m)
             agg.setdefault(label, []).append(dev[label])
             agg_pj.setdefault(label, []).append(d_joint)
+            # Wrist (palm) frame gap: pose vs triangulation, robust to finger flex.
+            pos_mm, ang_deg = wrist_pose_gap(wrist_pose_from_joints(joints[label]),
+                                             wrist_pose_from_joints(pose[label]))
+            if np.isfinite(pos_mm):
+                wg[label] = {"pos_mm": pos_mm, "ang_deg": ang_deg}
+                a = agg_wrist.setdefault(label, {"pos_mm": [], "ang_deg": []})
+                a["pos_mm"].append(pos_mm)
+                a["ang_deg"].append(ang_deg)
         records.append({"step": step, "stamp_ns": t,
                         "t_sec": (t - int(timeline[0])) / 1e9,
-                        "deviation": dev, "per_joint_dist_m": pj})
+                        "deviation": dev, "per_joint_dist_m": pj,
+                        "wrist_gap": wg})
     sys.stdout.write("\n")
     sys.stdout.flush()
 
@@ -500,6 +599,16 @@ def write_deviation_log(timeline, indexed, P, Kmat, Tmat, cam_a, cam_b, src,
             "rms": float(np.sqrt(np.mean(np.square(vs)))),
             "per_joint_mean_m": _nan_to_none(pj_mean),
         }
+        w = agg_wrist.get(label)
+        if w and w["pos_mm"]:
+            pos, ang = np.array(w["pos_mm"]), np.array(w["ang_deg"])
+            summary[label]["wrist"] = {
+                "count": int(pos.size),
+                "pos_mm": {"mean": float(pos.mean()), "median": float(np.median(pos)),
+                           "p95": float(np.percentile(pos, 95)), "max": float(pos.max())},
+                "ang_deg": {"mean": float(ang.mean()), "median": float(np.median(ang)),
+                            "p95": float(np.percentile(ang, 95)), "max": float(ang.max())},
+            }
 
     out_dir = DEVIATION_LOG_DIR or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "deviation_logs")
@@ -604,6 +713,12 @@ def main():
             for label, s in sorted(summary.items()):
                 print(f"  deviation[{label}]: n={s['count']} mean={s['mean']:.4f} "
                       f"rms={s['rms']:.4f} max={s['max']:.4f} m^2")
+                w = s.get("wrist")
+                if w:
+                    print(f"    wrist[{label}]: pos median={w['pos_mm']['median']:.1f}mm "
+                          f"p95={w['pos_mm']['p95']:.1f}mm  |  ang "
+                          f"median={w['ang_deg']['median']:.1f}° "
+                          f"p95={w['ang_deg']['p95']:.1f}°")
             print(f"deviation log written: {path}")
 
     # Figure: 3 camera 2D views on top, one 3D view spanning the bottom.
@@ -713,7 +828,7 @@ def main():
         info = (f"[{status}] 3D hand  tri({cam_a}+{cam_b})={sorted(joints) or 'none'}"
                 f"{pose_info}   t={secs:5.2f}s   step {step + 1}/{len(timeline)}")
         draw_hand_3d(ax3d, joints, centers, axes_dirs, cam_names, info, limits3d,
-                     pose_by_hand=pose_joints)
+                     pose_by_hand=pose_joints, show_wrist=ENABLE_WRIST_POSE)
 
         # Deviation between triangulated and estimated-pose hands (per hand
         # present in both); appended every frame so the timeline is continuous.
