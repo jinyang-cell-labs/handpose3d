@@ -36,6 +36,15 @@ SYNC_TOLERANCE_S = 0.05
 # distinct colour) to eyeball reprojection error. For the two triangulated
 # cameras this should hug the detection; the third is a cross-check.
 ENABLE_REPROJECT = True
+# Monocular model-based 6-DoF pose estimation (PnP on MediaPipe's hand_world
+# model) from a SINGLE camera. Drawn ALONGSIDE the triangulated 3D hand in its
+# own colour (does not replace it).
+ENABLE_POSE_ESTIMATION = True
+# The single camera the pose is estimated from (needs its 2D + world landmarks).
+POSE_ESTIMATION_SOURCE = "camera0"
+# Also reproject the estimated-pose hand onto all three cameras' 2D views (in a
+# third colour, distinct from detection and the triangulation reprojection).
+ENABLE_POSE_ESTIMATION_REPROJECT = True
 # Loop the replay until the window is closed.
 LOOP = True
 # ===========================================================================
@@ -48,6 +57,8 @@ sys.path.insert(
                  "mediapie_landmarks_extraction", "scripts"),
 )
 from load_handpose_log import load_log  # noqa: E402
+
+import pose_estimation as pe  # noqa: E402 (sibling module)
 
 # Select an interactive matplotlib backend BEFORE importing pyplot, so a window
 # actually opens. The venv's matplotlib otherwise falls back to the headless
@@ -80,7 +91,8 @@ HAND_CONNECTIONS = [
 ]
 N_LANDMARKS = 21
 HAND_COLORS = {"Left": "#3399ff", "Right": "#ff8033"}
-REPROJECT_COLOR = "#ff33cc"   # magenta — reprojected 3D, distinct from L/R
+REPROJECT_COLOR = "#ff33cc"   # magenta — triangulation reprojected into 2D
+POSE_COLOR = "#2ca02c"        # green — estimated 6-DoF pose (3D + its reprojection)
 CAM_COLORS = ["#e74c3c", "#2ecc71", "#9b59b6", "#f1c40f", "#1abc9c"]
 
 
@@ -160,7 +172,12 @@ def apply_limits_3d(ax, limits):
 
 # ------------------------------------------------------------------- loading
 def index_frames(log, camera, handedness):
-    """Per-camera sorted (stamps, hands) where hands = {label: (21,2) pixels}."""
+    """Per-camera sorted (stamps, hands).
+
+    hands = {label: {"image": (21,2) px, "world": (21,3) m | None}} — the
+    hand-local world model is kept so the pose-estimation source camera can run
+    PnP; it's None when the log didn't record world landmarks.
+    """
     stamps, hands = [], []
     for rec in log.frames:
         if rec["camera"] != camera:
@@ -170,11 +187,20 @@ def index_frames(log, camera, handedness):
             if handedness is not None and h["handedness"] != handedness:
                 continue
             img = np.asarray(h["landmarks_image"], float)[:, :2]  # x,y px
-            by_label[h["handedness"]] = img
+            world = h.get("landmarks_world")
+            world = np.asarray(world, float) if world is not None else None
+            by_label[h["handedness"]] = {"image": img, "world": world}
         stamps.append(rec["stamp_ns"])
         hands.append(by_label)
     order = np.argsort(stamps)
     return np.asarray(stamps)[order], [hands[i] for i in order]
+
+
+def pose_world_joints(T_world_hand, world_model):
+    """Place the hand-local model into the world via the estimated pose."""
+    R = T_world_hand[:3, :3]
+    t = T_world_hand[:3, 3]
+    return world_model @ R.T + t
 
 
 def nearest(stamps, hands, t, tol_ns):
@@ -194,7 +220,26 @@ def nearest(stamps, hands, t, tol_ns):
 
 
 # ----------------------------------------------------------------- plotting
-def draw_hand_2d(ax, hands, width, height, title, reproj=None):
+def _overlay_2d(ax, reproj, hands, style, marker, color, lw):
+    """Draw a reprojected skeleton overlay; return its mean px error vs detection."""
+    errs = []
+    for label, rp in reproj.items():
+        fin = np.all(np.isfinite(rp), axis=1)
+        for a, b in HAND_CONNECTIONS:
+            if fin[a] and fin[b]:
+                ax.plot([rp[a, 0], rp[b, 0]], [rp[a, 1], rp[b, 1]],
+                        style, color=color, lw=lw, zorder=4)
+        ax.scatter(rp[fin, 0], rp[fin, 1], s=14, marker=marker,
+                   color=color, zorder=5)
+        det = hands.get(label)
+        if det is not None:
+            m = fin & np.all(np.isfinite(det), axis=1)
+            if m.any():
+                errs.append(np.linalg.norm(rp[m] - det[m], axis=1))
+    return float(np.concatenate(errs).mean()) if errs else None
+
+
+def draw_hand_2d(ax, hands, width, height, title, reproj=None, pose_reproj=None):
     ax.clear()
     ax.set_xlim(0, width)
     ax.set_ylim(height, 0)          # image coords: y down
@@ -209,27 +254,18 @@ def draw_hand_2d(ax, hands, width, height, title, reproj=None):
                     "-", color=color, lw=1.5)
         ax.scatter(pts[:, 0], pts[:, 1], s=10, color=color, zorder=3)
 
-    # Reprojected triangulated 3D (dashed magenta + x), plus mean error vs the
-    # detection in this view.
-    err_txt = ""
+    # Triangulation reprojection (dashed magenta x) and pose reprojection
+    # (dotted green +), each with its mean px error vs the detection.
+    extra = ""
     if reproj:
-        errs = []
-        for label, rp in reproj.items():
-            fin = np.all(np.isfinite(rp), axis=1)
-            for a, b in HAND_CONNECTIONS:
-                if fin[a] and fin[b]:
-                    ax.plot([rp[a, 0], rp[b, 0]], [rp[a, 1], rp[b, 1]],
-                            "--", color=REPROJECT_COLOR, lw=1.0, zorder=4)
-            ax.scatter(rp[fin, 0], rp[fin, 1], s=14, marker="x",
-                       color=REPROJECT_COLOR, zorder=5)
-            det = hands.get(label)
-            if det is not None:
-                m = fin & np.all(np.isfinite(det), axis=1)
-                if m.any():
-                    errs.append(np.linalg.norm(rp[m] - det[m], axis=1))
-        if errs:
-            err_txt = f"  reproj {np.concatenate(errs).mean():.1f}px"
-    ax.set_title(title + err_txt, fontsize=9)
+        e = _overlay_2d(ax, reproj, hands, "--", "x", REPROJECT_COLOR, 1.0)
+        if e is not None:
+            extra += f"  tri {e:.1f}px"
+    if pose_reproj:
+        e = _overlay_2d(ax, pose_reproj, hands, ":", "+", POSE_COLOR, 1.2)
+        if e is not None:
+            extra += f"  pose {e:.1f}px"
+    ax.set_title(title + extra, fontsize=9)
 
 
 def draw_cameras_3d(ax, centers, axes_dirs, names):
@@ -244,7 +280,18 @@ def draw_cameras_3d(ax, centers, axes_dirs, names):
                   color=color, length=1.0, normalize=False, alpha=0.7)
 
 
-def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits):
+def _skeleton_3d(ax, J, color, style, lw, marker):
+    fin = np.all(np.isfinite(J), axis=1)
+    for a, b in HAND_CONNECTIONS:
+        if fin[a] and fin[b]:
+            ax.plot([J[a, 0], J[b, 0]], [J[a, 1], J[b, 1]], [J[a, 2], J[b, 2]],
+                    style, color=color, lw=lw)
+    ax.scatter(J[fin, 0], J[fin, 1], J[fin, 2], s=18, color=color,
+               marker=marker, depthshade=False)
+
+
+def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits,
+                 pose_by_hand=None):
     # Preserve the user's current view orientation across the per-frame clear.
     elev, azim = ax.elev, ax.azim
     ax.clear()
@@ -253,15 +300,14 @@ def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits):
 
     draw_cameras_3d(ax, centers, axes_dirs, names)
 
+    # Triangulated hand (solid, per-hand colour).
     for label, J in joints_by_hand.items():
-        color = HAND_COLORS.get(label, "#888888")
-        fin = np.all(np.isfinite(J), axis=1)
-        for a, b in HAND_CONNECTIONS:
-            if fin[a] and fin[b]:
-                ax.plot([J[a, 0], J[b, 0]], [J[a, 1], J[b, 1]],
-                        [J[a, 2], J[b, 2]], "-", color=color, lw=2)
-        ax.scatter(J[fin, 0], J[fin, 1], J[fin, 2], s=18, color=color,
-                   depthshade=False)
+        _skeleton_3d(ax, J, HAND_COLORS.get(label, "#888888"), "-", 2, "o")
+
+    # Estimated-pose hand alongside it (dashed green diamonds), not replacing it.
+    if pose_by_hand:
+        for label, J in pose_by_hand.items():
+            _skeleton_3d(ax, J, POSE_COLOR, "--", 1.5, "D")
 
     apply_limits_3d(ax, limits)       # FIXED limits every frame
     ax.view_init(elev=elev, azim=azim)
@@ -281,9 +327,14 @@ def main():
     for c in TRIANGULATE_CAMERAS:
         if c not in meta["cameras"]:
             sys.exit(f"TRIANGULATE_CAMERAS has unknown camera '{c}'")
+    if ENABLE_POSE_ESTIMATION and POSE_ESTIMATION_SOURCE not in meta["cameras"]:
+        sys.exit(f"POSE_ESTIMATION_SOURCE has unknown camera "
+                 f"'{POSE_ESTIMATION_SOURCE}'")
 
-    # Per-camera calibration: projection matrix, center, optical axis (world).
+    # Per-camera calibration: projection matrix, center, optical axis, plus the
+    # raw K / T_world_cam (needed by the pose estimator).
     P, centers, axes_dirs, resolution = {}, {}, {}, {}
+    Kmat, Tmat = {}, {}
     for name, c in meta["cameras"].items():
         intr = c.get("intrinsics")
         T = c.get("T_world_cam")
@@ -291,6 +342,7 @@ def main():
             sys.exit(f"camera '{name}' is missing intrinsics/extrinsics in the log")
         K = np.asarray(intr["K"], float).reshape(3, 3)
         T = np.asarray(T, float).reshape(4, 4)
+        Kmat[name], Tmat[name] = K, T
         P[name] = projection_matrix(K, T)
         centers[name] = T[:3, 3]
         axes_dirs[name] = T[:3, :3] @ np.array([0.0, 0.0, 1.0])  # +Z in world
@@ -322,7 +374,8 @@ def main():
         ha = nearest(*indexed[cam_a], int(t), tol_ns)
         hb = nearest(*indexed[cam_b], int(t), tol_ns)
         for label in set(ha) & set(hb):
-            J = triangulate_hand(ha[label], hb[label], P[cam_a], P[cam_b])
+            J = triangulate_hand(ha[label]["image"], hb[label]["image"],
+                                 P[cam_a], P[cam_b])
             bounds.append(J[np.all(np.isfinite(J), axis=1)])
     limits3d = equal_cube_limits(np.vstack(bounds))
     print("fixed 3D limits (m): "
@@ -336,41 +389,64 @@ def main():
     ax2d = [fig.add_subplot(gs[0, i]) for i in range(3)]
     ax3d = fig.add_subplot(gs[1, :], projection="3d")
 
+    src = POSE_ESTIMATION_SOURCE
+
     def update(step):
         t = int(timeline[step])
         per_cam = {n: nearest(*indexed[n], t, tol_ns) for n in cam_names}
+        # Detected pixels per camera as {label: (21,2)} for drawing/overlays.
+        det = {n: {lbl: d["image"] for lbl, d in per_cam[n].items()}
+               for n in cam_names}
 
         # Triangulate the chosen pair for every hand present in both views.
         joints = {}
         ha, hb = per_cam.get(cam_a, {}), per_cam.get(cam_b, {})
         for label in set(ha) & set(hb):
-            joints[label] = triangulate_hand(ha[label], hb[label],
+            joints[label] = triangulate_hand(ha[label]["image"],
+                                             hb[label]["image"],
                                              P[cam_a], P[cam_b])
 
-        # Reproject the 3D joints back onto each camera (optional QA overlay).
-        reproj_by_cam = {}
-        if ENABLE_REPROJECT:
-            for name in cam_names:
-                reproj_by_cam[name] = {
-                    label: project_points(P[name], J)
-                    for label, J in joints.items()
-                }
+        # Monocular 6-DoF pose from the source camera -> hand placed in world.
+        pose_joints = {}     # {label: (21,3) world} estimated-pose hand
+        pose_info = ""
+        if ENABLE_POSE_ESTIMATION:
+            for label, d in per_cam.get(src, {}).items():
+                if d["world"] is None:
+                    continue
+                r = pe.estimate_hand_pose(Kmat[src], Tmat[src],
+                                          d["image"], d["world"])
+                if r.success:
+                    pose_joints[label] = pose_world_joints(r.T_world_hand,
+                                                           d["world"])
+            if pose_joints:
+                pose_info = f"   pose<-{src}: {sorted(pose_joints)}"
+
+        # Reprojections onto each camera (triangulation and/or estimated pose).
+        reproj_by_cam, pose_reproj_by_cam = {}, {}
+        for name in cam_names:
+            if ENABLE_REPROJECT:
+                reproj_by_cam[name] = {lbl: project_points(P[name], J)
+                                       for lbl, J in joints.items()}
+            if ENABLE_POSE_ESTIMATION and ENABLE_POSE_ESTIMATION_REPROJECT:
+                pose_reproj_by_cam[name] = {lbl: project_points(P[name], J)
+                                            for lbl, J in pose_joints.items()}
 
         # 2D: up to three cameras (pad if the log has fewer).
         for k in range(3):
             if k < len(cam_names):
                 name = cam_names[k]
                 w, h = resolution[name]
-                draw_hand_2d(ax2d[k], per_cam[name], w, h, f"{name} (2D)",
-                             reproj=reproj_by_cam.get(name))
+                draw_hand_2d(ax2d[k], det[name], w, h, f"{name} (2D)",
+                             reproj=reproj_by_cam.get(name),
+                             pose_reproj=pose_reproj_by_cam.get(name))
             else:
                 ax2d[k].clear(); ax2d[k].axis("off")
 
         secs = (t - int(timeline[0])) / 1e9
-        info = (f"3D hand  ({cam_a} + {cam_b})   "
-                f"t={secs:5.2f}s   step {step + 1}/{len(timeline)}   "
-                f"hands: {sorted(joints) or 'none'}")
-        draw_hand_3d(ax3d, joints, centers, axes_dirs, cam_names, info, limits3d)
+        info = (f"3D hand  tri({cam_a}+{cam_b})={sorted(joints) or 'none'}"
+                f"{pose_info}   t={secs:5.2f}s   step {step + 1}/{len(timeline)}")
+        draw_hand_3d(ax3d, joints, centers, axes_dirs, cam_names, info, limits3d,
+                     pose_by_hand=pose_joints)
 
     fig.tight_layout()
     plt.show(block=False)
