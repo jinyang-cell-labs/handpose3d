@@ -1,0 +1,9 @@
+# Python deps for analysing/visualising the handpose JSONL logs produced by
+# ros2_ws/src/mediapie_landmarks_extraction. Installed into ./.venv by
+# start_evaluation.bash. Pins are lower bounds — bump freely.
+numpy>=1.26          # arrays / linear algebra (DLT triangulation, etc.)
+scipy>=1.11          # non-linear optimisation (least_squares) + spatial transforms
+matplotlib>=3.8      # 2D and 3D plotting (mpl_toolkits.mplot3d)
+opencv-python>=4.8   # triangulatePoints / projectPoints / Rodrigues helpers
+pandas>=2.1          # tabular wrangling of the per-frame records
+pyyaml>=6.0          # read the calibration yaml when needed
