@@ -60,7 +60,7 @@ ENABLE_ORIENTATION_VIEW = True
 # Record EVERY frame's tri-vs-pose deviation (not just the rolling DEVIATION_LENGTH
 # window) to a JSON file, together with a snapshot of this config. Written once,
 # up front, over the whole timeline. Needs ENABLE_POSE_ESTIMATION.
-ENABLE_DEVIATION_LOG = False
+ENABLE_DEVIATION_LOG = True
 # Output directory for the deviation log; "" -> ./deviation_logs next to this file.
 DEVIATION_LOG_DIR = ""
 # Loop the replay until the window is closed.
@@ -445,7 +445,22 @@ def write_deviation_log(timeline, indexed, P, Kmat, Tmat, cam_a, cam_b, src,
     Deviation metric: sum over the 21 joints of ||tri - pose||^2 (m^2).
     """
     records, agg, agg_pj = [], {}, {}
+    total = len(timeline)
+    print(f"computing deviation over {total} frames "
+          "(PnP per frame, this can take a while)...")
+    t_start = time.time()
     for step, t in enumerate(timeline.tolist()):
+        # Progress: every 25 frames (and on the last), one updating line with an
+        # ETA, so the up-front pass isn't a silent wait.
+        if step % 25 == 0 or step == total - 1:
+            done = step + 1
+            elapsed = time.time() - t_start
+            rate = done / elapsed if elapsed > 0 else 0.0
+            eta = (total - done) / rate if rate > 0 else 0.0
+            sys.stdout.write(
+                f"\r  deviation {done}/{total} ({100 * done / total:5.1f}%)  "
+                f"{rate:5.1f} fps  ETA {eta:5.1f}s")
+            sys.stdout.flush()
         t = int(t)
         ha = nearest(*indexed[cam_a], t, tol_ns)
         hb = nearest(*indexed[cam_b], t, tol_ns)
@@ -471,6 +486,8 @@ def write_deviation_log(timeline, indexed, P, Kmat, Tmat, cam_a, cam_b, src,
         records.append({"step": step, "stamp_ns": t,
                         "t_sec": (t - int(timeline[0])) / 1e9,
                         "deviation": dev, "per_joint_dist_m": pj})
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
     summary = {}
     for label, vs in agg.items():
