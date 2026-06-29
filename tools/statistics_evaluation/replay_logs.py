@@ -45,7 +45,7 @@ ENABLE_REPROJECT = True
 # own colour (does not replace it).
 ENABLE_POSE_ESTIMATION = True
 # The single camera the pose is estimated from (needs its 2D + world landmarks).
-POSE_ESTIMATION_SOURCE = "camera0"
+POSE_ESTIMATION_SOURCE = "camera1"
 # Also reproject the estimated-pose hand onto all three cameras' 2D views (in a
 # third colour, distinct from detection and the triangulation reprojection).
 ENABLE_POSE_ESTIMATION_REPROJECT = True
@@ -60,7 +60,7 @@ ENABLE_ORIENTATION_VIEW = True
 # Record EVERY frame's tri-vs-pose deviation (not just the rolling DEVIATION_LENGTH
 # window) to a JSON file, together with a snapshot of this config. Written once,
 # up front, over the whole timeline. Needs ENABLE_POSE_ESTIMATION.
-ENABLE_DEVIATION_LOG = True
+ENABLE_DEVIATION_LOG = False
 # Output directory for the deviation log; "" -> ./deviation_logs next to this file.
 DEVIATION_LOG_DIR = ""
 # Loop the replay until the window is closed.
@@ -610,6 +610,34 @@ def main():
 
     src = POSE_ESTIMATION_SOURCE
 
+    # Playback state, driven by keyboard:
+    #   space      play / pause
+    #   right / .  step one frame forward (pauses)
+    #   left  / ,  step one frame backward (pauses)
+    #   home / end jump to first / last frame
+    #   q / esc    quit
+    state = {"step": 0, "target": 0, "playing": True, "quit": False}
+
+    def on_key(event):
+        n = len(timeline)
+        k = event.key
+        if k == " ":
+            state["playing"] = not state["playing"]
+        elif k in ("right", "."):
+            state["playing"] = False
+            state["target"] = min(state["step"] + 1, n - 1)
+        elif k in ("left", ","):
+            state["playing"] = False
+            state["target"] = max(state["step"] - 1, 0)
+        elif k == "home":
+            state["playing"] = False
+            state["target"] = 0
+        elif k == "end":
+            state["playing"] = False
+            state["target"] = n - 1
+        elif k in ("q", "escape"):
+            state["quit"] = True
+
     def update(step):
         t = int(timeline[step])
         per_cam = {n: nearest(*indexed[n], t, tol_ns) for n in cam_names}
@@ -664,7 +692,8 @@ def main():
                 ax2d[k].clear(); ax2d[k].axis("off")
 
         secs = (t - int(timeline[0])) / 1e9
-        info = (f"3D hand  tri({cam_a}+{cam_b})={sorted(joints) or 'none'}"
+        status = "PLAY" if state["playing"] else "PAUSE"
+        info = (f"[{status}] 3D hand  tri({cam_a}+{cam_b})={sorted(joints) or 'none'}"
                 f"{pose_info}   t={secs:5.2f}s   step {step + 1}/{len(timeline)}")
         draw_hand_3d(ax3d, joints, centers, axes_dirs, cam_names, info, limits3d,
                      pose_by_hand=pose_joints)
@@ -684,23 +713,54 @@ def main():
     fig.tight_layout()
     if fig_dev is not None:
         fig_dev.tight_layout()
+
+    # Listen for keyboard control on every window, so the keys work whichever
+    # one has focus.
+    for f in (fig, fig_dev, fig_ori):
+        if f is not None:
+            f.canvas.mpl_connect("key_press_event", on_key)
+
+    print("controls: [space] play/pause   [<-]/[->] step   "
+          "[home]/[end] jump   [q] quit")
+
+    def draw_all():
+        fig.canvas.draw_idle()
+        if fig_dev is not None and plt.fignum_exists(fig_dev.number):
+            fig_dev.canvas.draw_idle()
+        if fig_ori is not None and plt.fignum_exists(fig_ori.number):
+            fig_ori.canvas.draw_idle()
+
     plt.show(block=False)
-    while plt.fignum_exists(fig.number):
-        for step in range(len(timeline)):
-            if not plt.fignum_exists(fig.number):
-                break
-            update(step)
-            fig.canvas.draw_idle()
-            if fig_dev is not None and plt.fignum_exists(fig_dev.number):
-                fig_dev.canvas.draw_idle()
-            if fig_ori is not None and plt.fignum_exists(fig_ori.number):
-                fig_ori.canvas.draw_idle()
-            pause = dts[step - 1] if step > 0 else 0.03
-            plt.pause(float(np.clip(pause, 1e-3, 1.0)))
-        if not LOOP:
-            break
-    if plt.fignum_exists(fig.number):
-        plt.show()
+    n = len(timeline)
+    update(0)
+    draw_all()
+    last_drawn = 0
+    last_playing = state["playing"]
+    while plt.fignum_exists(fig.number) and not state["quit"]:
+        if state["playing"]:
+            nxt = state["step"] + 1
+            if nxt >= n:
+                if LOOP:
+                    nxt = 0
+                else:
+                    state["playing"] = False
+                    nxt = state["step"]
+            state["target"] = nxt
+
+        # Redraw on a frame change or a play/pause toggle (refreshes the label).
+        if state["target"] != last_drawn or state["playing"] != last_playing:
+            state["step"] = state["target"]
+            update(state["step"])
+            draw_all()
+            last_drawn = state["step"]
+            last_playing = state["playing"]
+
+        if state["playing"]:
+            pause = dts[state["step"] - 1] if state["step"] > 0 else 0.03
+        else:
+            # Idle, but stay responsive to key presses while paused.
+            pause = 0.05
+        plt.pause(float(np.clip(pause, 1e-3, 1.0)))
 
 
 if __name__ == "__main__":
