@@ -24,6 +24,9 @@ ros2_ws/log/
 # recorded handpose logging takes (mediapie_landmarks_extraction)
 ros2_ws/logs/
 
+# generated deviation logs (tools/statistics_evaluation replay_logs.py)
+tools/statistics_evaluation/deviation_logs/
+
 # Test / coverage caches
 .pytest_cache/
 .mypy_cache/

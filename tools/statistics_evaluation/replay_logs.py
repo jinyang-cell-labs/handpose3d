@@ -13,8 +13,10 @@ path, the camera pair to triangulate, and the replay speed there.
 """
 
 import bisect
+import json
 import os
 import sys
+import time
 from collections import deque
 
 import numpy as np
@@ -55,6 +57,12 @@ DEVIATION_LENGTH = 100
 # (the hand-local X/Y/Z axes in the world frame) + roll/pitch/yaw. Needs
 # ENABLE_POSE_ESTIMATION.
 ENABLE_ORIENTATION_VIEW = True
+# Record EVERY frame's tri-vs-pose deviation (not just the rolling DEVIATION_LENGTH
+# window) to a JSON file, together with a snapshot of this config. Written once,
+# up front, over the whole timeline. Needs ENABLE_POSE_ESTIMATION.
+ENABLE_DEVIATION_LOG = True
+# Output directory for the deviation log; "" -> ./deviation_logs next to this file.
+DEVIATION_LOG_DIR = ""
 # Loop the replay until the window is closed.
 LOOP = True
 # ===========================================================================
@@ -336,6 +344,20 @@ def deviation_ssd(J_tri, J_pose):
     return float(np.sum((J_tri[m] - J_pose[m]) ** 2))
 
 
+def per_joint_distances(J_tri, J_pose):
+    """Per-joint Euclidean distance ||tri - pose|| (m); (21,) with NaN where
+    either side is missing. SSD == nansum(per_joint_distances**2)."""
+    m = np.all(np.isfinite(J_tri), axis=1) & np.all(np.isfinite(J_pose), axis=1)
+    d = np.full(N_LANDMARKS, np.nan)
+    d[m] = np.linalg.norm(J_tri[m] - J_pose[m], axis=1)
+    return d
+
+
+def _nan_to_none(arr):
+    """numpy array -> JSON-safe list with NaN/inf replaced by None."""
+    return [float(v) if np.isfinite(v) else None for v in np.asarray(arr)]
+
+
 def draw_deviation(ax, hist, length):
     """Rolling line plot of per-hand deviation over the last ``length`` frames."""
     ax.clear()
@@ -393,6 +415,93 @@ def draw_orientation(ax, rot_by_hand):
                  + ("   " + "  |  ".join(titles) if titles else "   (no pose)"),
                  fontsize=9)
     ax.view_init(elev=elev, azim=azim)
+
+
+def _config_snapshot():
+    """Snapshot the USER CONFIG values for embedding in the deviation log."""
+    return {
+        "LOG_PATH": LOG_PATH,
+        "TRIANGULATE_CAMERAS": list(TRIANGULATE_CAMERAS),
+        "REPLAY_SPEED": REPLAY_SPEED,
+        "HANDEDNESS": HANDEDNESS,
+        "SYNC_TOLERANCE_S": SYNC_TOLERANCE_S,
+        "ENABLE_REPROJECT": ENABLE_REPROJECT,
+        "ENABLE_POSE_ESTIMATION": ENABLE_POSE_ESTIMATION,
+        "POSE_ESTIMATION_SOURCE": POSE_ESTIMATION_SOURCE,
+        "ENABLE_POSE_ESTIMATION_REPROJECT": ENABLE_POSE_ESTIMATION_REPROJECT,
+        "DEVIATION_LENGTH": DEVIATION_LENGTH,
+        "ENABLE_ORIENTATION_VIEW": ENABLE_ORIENTATION_VIEW,
+    }
+
+
+def write_deviation_log(timeline, indexed, P, Kmat, Tmat, cam_a, cam_b, src,
+                        tol_ns):
+    """One full pass over the timeline -> JSON of every frame's deviation.
+
+    Records one entry PER timeline frame (deviation empty where triangulation or
+    the source-camera pose was unavailable), a per-hand summary, and a snapshot
+    of the config. Returns the written path.
+
+    Deviation metric: sum over the 21 joints of ||tri - pose||^2 (m^2).
+    """
+    records, agg, agg_pj = [], {}, {}
+    for step, t in enumerate(timeline.tolist()):
+        t = int(t)
+        ha = nearest(*indexed[cam_a], t, tol_ns)
+        hb = nearest(*indexed[cam_b], t, tol_ns)
+        joints = {l: triangulate_hand(ha[l]["image"], hb[l]["image"],
+                                      P[cam_a], P[cam_b])
+                  for l in set(ha) & set(hb)}
+        pose = {}
+        for label, d in nearest(*indexed[src], t, tol_ns).items():
+            if d["world"] is None:
+                continue
+            r = pe.estimate_hand_pose(Kmat[src], Tmat[src], d["image"], d["world"])
+            if r.success:
+                pose[label] = pose_world_joints(r.T_world_hand, d["world"])
+        dev, pj = {}, {}
+        for label in set(joints) & set(pose):
+            d_joint = per_joint_distances(joints[label], pose[label])  # (21,) m
+            if not np.isfinite(d_joint).any():
+                continue
+            dev[label] = float(np.nansum(d_joint ** 2))   # SSD (m^2)
+            pj[label] = _nan_to_none(d_joint)              # per-joint dist (m)
+            agg.setdefault(label, []).append(dev[label])
+            agg_pj.setdefault(label, []).append(d_joint)
+        records.append({"step": step, "stamp_ns": t,
+                        "t_sec": (t - int(timeline[0])) / 1e9,
+                        "deviation": dev, "per_joint_dist_m": pj})
+
+    summary = {}
+    for label, vs in agg.items():
+        pj_mean = np.nanmean(np.vstack(agg_pj[label]), axis=0)   # (21,) m
+        summary[label] = {
+            "count": len(vs),
+            "mean": float(np.mean(vs)),
+            "min": float(np.min(vs)),
+            "max": float(np.max(vs)),
+            "rms": float(np.sqrt(np.mean(np.square(vs)))),
+            "per_joint_mean_m": _nan_to_none(pj_mean),
+        }
+
+    out_dir = DEVIATION_LOG_DIR or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "deviation_logs")
+    os.makedirs(out_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(LOG_PATH))[0]
+    path = os.path.join(out_dir, f"deviation_{stem}_{time.strftime('%Y%m%d_%H%M%S')}.json")
+    payload = {
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "deviation_metric": "sum_sq_joint_distance_m2",
+        "triangulate_cameras": list(TRIANGULATE_CAMERAS),
+        "pose_source": src,
+        "n_timeline_frames": len(records),
+        "config": _config_snapshot(),
+        "summary": summary,
+        "frames": records,
+    }
+    with open(path, "w") as fh:
+        json.dump(payload, fh, indent=2)
+    return path, summary
 
 
 # --------------------------------------------------------------------- main
@@ -464,6 +573,21 @@ def main():
           f"X{tuple(np.round(limits3d[0], 2))} "
           f"Y{tuple(np.round(limits3d[1], 2))} "
           f"Z{tuple(np.round(limits3d[2], 2))}")
+
+    # Deviation log: record every frame's tri-vs-pose deviation up front (before
+    # the animation, so the full dataset is saved regardless of when the window
+    # is closed).
+    if ENABLE_DEVIATION_LOG:
+        if not ENABLE_POSE_ESTIMATION:
+            print("ENABLE_DEVIATION_LOG ignored: needs ENABLE_POSE_ESTIMATION.")
+        else:
+            path, summary = write_deviation_log(
+                timeline, indexed, P, Kmat, Tmat, cam_a, cam_b,
+                POSE_ESTIMATION_SOURCE, tol_ns)
+            for label, s in sorted(summary.items()):
+                print(f"  deviation[{label}]: n={s['count']} mean={s['mean']:.4f} "
+                      f"rms={s['rms']:.4f} max={s['max']:.4f} m^2")
+            print(f"deviation log written: {path}")
 
     # Figure: 3 camera 2D views on top, one 3D view spanning the bottom.
     fig = plt.figure(figsize=(13, 8))
