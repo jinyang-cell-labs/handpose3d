@@ -45,7 +45,7 @@ ENABLE_REPROJECT = True
 # own colour (does not replace it).
 ENABLE_POSE_ESTIMATION = True
 # The single camera the pose is estimated from (needs its 2D + world landmarks).
-POSE_ESTIMATION_SOURCE = "camera0"
+POSE_ESTIMATION_SOURCE = "camera1"
 # Also reproject the estimated-pose hand onto all three cameras' 2D views (in a
 # third colour, distinct from detection and the triangulation reprojection).
 ENABLE_POSE_ESTIMATION_REPROJECT = True
@@ -382,10 +382,11 @@ def _wrist_triad_3d(ax, origin, R, length, dashed, lw):
 
 
 def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits,
-                 pose_by_hand=None, show_wrist=False):
+                 pose_by_hand=None):
     # Preserve the user's current view orientation across the per-frame clear.
     elev, azim = ax.elev, ax.azim
     ax.clear()
+    ax.set_title(info, fontsize=9)
     ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)"); ax.set_zlabel("Z (m)")
 
     draw_cameras_3d(ax, centers, axes_dirs, names)
@@ -399,28 +400,51 @@ def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits,
         for label, J in pose_by_hand.items():
             _skeleton_3d(ax, J, POSE_COLOR, "--", 1.5, "D")
 
-    # Wrist (palm) frames at the wrist: solid = triangulation, dashed = pose.
-    # The title gains the per-hand pose-vs-tri wrist gap (mm position, ° angle).
-    if show_wrist:
-        gaps = []
-        for label, J in joints_by_hand.items():
-            wp_tri = wrist_pose_from_joints(J)
-            if wp_tri is not None:
-                _wrist_triad_3d(ax, wp_tri[0], wp_tri[1], WRIST_TRIAD_LEN,
-                                dashed=False, lw=2.5)
-            wp_pose = (wrist_pose_from_joints(pose_by_hand[label])
-                       if pose_by_hand and label in pose_by_hand else None)
-            if wp_pose is not None:
-                _wrist_triad_3d(ax, wp_pose[0], wp_pose[1], WRIST_TRIAD_LEN,
-                                dashed=True, lw=2.0)
-            pos_mm, ang_deg = wrist_pose_gap(wp_tri, wp_pose)
-            if np.isfinite(pos_mm):
-                gaps.append(f"{label} Δ{pos_mm:.0f}mm/{ang_deg:.0f}°")
-        if gaps:
-            info += "   wrist[tri vs pose]: " + "  ".join(gaps)
-
-    ax.set_title(info, fontsize=9)
     apply_limits_3d(ax, limits)       # FIXED limits every frame
+    ax.view_init(elev=elev, azim=azim)
+
+
+def draw_wrist_pose(ax, joints_by_hand, pose_by_hand):
+    """Dedicated 3D view of the WRIST (palm) frames, zoomed to the wrist region.
+
+    Solid triad = triangulation, dashed triad = estimated pose (X red, Y green,
+    Z blue). A dotted grey connector spans the two origins (the position gap);
+    the title reports the per-hand tri-vs-pose gap (mm position, ° orientation).
+    Auto-scaled tightly to the frames so the small offsets are actually visible —
+    which is why this lives in its own window rather than the full-hand 3D view.
+    """
+    elev, azim = ax.elev, ax.azim
+    ax.clear()
+    ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)"); ax.set_zlabel("Z (m)")
+
+    pts, titles = [], []
+    for label, J in joints_by_hand.items():
+        wp_tri = wrist_pose_from_joints(J)
+        wp_pose = (wrist_pose_from_joints(pose_by_hand[label])
+                   if pose_by_hand and label in pose_by_hand else None)
+        for wp, dashed, lw in ((wp_tri, False, 2.5), (wp_pose, True, 2.0)):
+            if wp is None:
+                continue
+            o, R = wp
+            _wrist_triad_3d(ax, o, R, WRIST_TRIAD_LEN, dashed, lw)
+            pts.append(o)
+            pts.extend(o + R[:, k] * WRIST_TRIAD_LEN for k in range(3))
+        if wp_tri is not None:
+            ax.text(wp_tri[0][0], wp_tri[0][1], wp_tri[0][2], f"  {label}",
+                    color=HAND_COLORS.get(label, "#888888"), fontsize=8)
+        if wp_tri is not None and wp_pose is not None:
+            a, b = wp_tri[0], wp_pose[0]
+            ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]],
+                    color="#888888", lw=1.0, ls=":")
+            pos_mm, ang_deg = wrist_pose_gap(wp_tri, wp_pose)
+            titles.append(f"{label}: Δ{pos_mm:.0f}mm / {ang_deg:.0f}°")
+
+    if pts:
+        apply_limits_3d(ax, equal_cube_limits(
+            np.array(pts), pad=1.3, min_radius=WRIST_TRIAD_LEN * 1.5))
+    ax.set_title("wrist pose  (solid=tri, dashed=pose;  X=red Y=green Z=blue)"
+                 + ("   " + "  |  ".join(titles) if titles
+                    else "   (no wrist frame)"), fontsize=9)
     ax.view_init(elev=elev, azim=azim)
 
 
@@ -740,6 +764,12 @@ def main():
         fig_ori = plt.figure("orientation", figsize=(6, 4))
         ax_ori = fig_ori.add_subplot(111, projection="3d")
 
+    # Fourth window: dedicated wrist (palm) pose comparison, tri vs pose.
+    fig_wrist, ax_wrist = None, None
+    if ENABLE_WRIST_POSE:
+        fig_wrist = plt.figure("wrist pose", figsize=(6, 5))
+        ax_wrist = fig_wrist.add_subplot(111, projection="3d")
+
     src = POSE_ESTIMATION_SOURCE
 
     # Playback state, driven by keyboard:
@@ -828,7 +858,7 @@ def main():
         info = (f"[{status}] 3D hand  tri({cam_a}+{cam_b})={sorted(joints) or 'none'}"
                 f"{pose_info}   t={secs:5.2f}s   step {step + 1}/{len(timeline)}")
         draw_hand_3d(ax3d, joints, centers, axes_dirs, cam_names, info, limits3d,
-                     pose_by_hand=pose_joints, show_wrist=ENABLE_WRIST_POSE)
+                     pose_by_hand=pose_joints)
 
         # Deviation between triangulated and estimated-pose hands (per hand
         # present in both); appended every frame so the timeline is continuous.
@@ -842,13 +872,17 @@ def main():
         if ENABLE_POSE_ESTIMATION and ax_ori is not None:
             draw_orientation(ax_ori, pose_rot)
 
+        # Dedicated wrist (palm) pose comparison window.
+        if ax_wrist is not None:
+            draw_wrist_pose(ax_wrist, joints, pose_joints)
+
     fig.tight_layout()
     if fig_dev is not None:
         fig_dev.tight_layout()
 
     # Listen for keyboard control on every window, so the keys work whichever
     # one has focus.
-    for f in (fig, fig_dev, fig_ori):
+    for f in (fig, fig_dev, fig_ori, fig_wrist):
         if f is not None:
             f.canvas.mpl_connect("key_press_event", on_key)
 
@@ -861,6 +895,8 @@ def main():
             fig_dev.canvas.draw_idle()
         if fig_ori is not None and plt.fignum_exists(fig_ori.number):
             fig_ori.canvas.draw_idle()
+        if fig_wrist is not None and plt.fignum_exists(fig_wrist.number):
+            fig_wrist.canvas.draw_idle()
 
     plt.show(block=False)
     n = len(timeline)
