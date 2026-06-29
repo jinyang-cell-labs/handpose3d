@@ -25,13 +25,17 @@ LOG_PATH = (
     "handpose_log_20260626_155546.jsonl"
 )
 # The two cameras (by name, as in the log meta) to triangulate the 3D hand from.
-TRIANGULATE_CAMERAS = ("camera0", "camera1")
+TRIANGULATE_CAMERAS = ("camera0", "camera2")
 # Replay speed: 1.0 = real time, 2.0 = twice as fast, 0.5 = half speed.
 REPLAY_SPEED = 1.0
 # Which hand to show: "Left", "Right", or None for whatever is present.
 HANDEDNESS = None
 # Max time difference (s) for a camera's detection to count as "the same moment".
 SYNC_TOLERANCE_S = 0.05
+# Reproject the triangulated 3D hand back onto ALL three cameras' 2D views (in a
+# distinct colour) to eyeball reprojection error. For the two triangulated
+# cameras this should hug the detection; the third is a cross-check.
+ENABLE_REPROJECT = True
 # Loop the replay until the window is closed.
 LOOP = True
 # ===========================================================================
@@ -76,6 +80,7 @@ HAND_CONNECTIONS = [
 ]
 N_LANDMARKS = 21
 HAND_COLORS = {"Left": "#3399ff", "Right": "#ff8033"}
+REPROJECT_COLOR = "#ff33cc"   # magenta — reprojected 3D, distinct from L/R
 CAM_COLORS = ["#e74c3c", "#2ecc71", "#9b59b6", "#f1c40f", "#1abc9c"]
 
 
@@ -113,17 +118,43 @@ def triangulate_hand(pts0, pts1, P0, P1):
     return out
 
 
-def set_axes_equal_3d(ax, pts):
-    """Equal aspect for a 3D axis around the given (N,3) points."""
+def project_points(P, pts3d):
+    """Pinhole-project (21, 3) world points to (21, 2) pixels (NaN preserved).
+
+    Landmarks are in the undistorted pinhole image (landmarks_undistorted), so
+    P = K[R|t] alone reprojects them — no distortion term needed.
+    """
+    out = np.full((N_LANDMARKS, 2), np.nan)
+    for i in range(N_LANDMARKS):
+        X = pts3d[i]
+        if not np.all(np.isfinite(X)):
+            continue
+        xh = P @ np.array([X[0], X[1], X[2], 1.0])
+        if abs(xh[2]) < 1e-9:
+            continue
+        out[i] = xh[:2] / xh[2]
+    return out
+
+
+def equal_cube_limits(pts, pad=1.15, min_radius=0.1):
+    """Fixed equal-aspect cube limits enclosing the given (N,3) points.
+
+    Returns ``[(xlo,xhi),(ylo,yhi),(zlo,zhi)]`` — a single cube (same half-width
+    on every axis) so the 3D view keeps a constant, undistorted scale.
+    """
     pts = pts[np.all(np.isfinite(pts), axis=1)]
     if len(pts) == 0:
-        return
+        return [(-1, 1), (-1, 1), (-1, 1)]
     mins, maxs = pts.min(0), pts.max(0)
     center = (mins + maxs) / 2.0
-    radius = max((maxs - mins).max() / 2.0, 0.1)
-    ax.set_xlim(center[0] - radius, center[0] + radius)
-    ax.set_ylim(center[1] - radius, center[1] + radius)
-    ax.set_zlim(center[2] - radius, center[2] + radius)
+    radius = max((maxs - mins).max() / 2.0 * pad, min_radius)
+    return [(center[i] - radius, center[i] + radius) for i in range(3)]
+
+
+def apply_limits_3d(ax, limits):
+    ax.set_xlim(*limits[0])
+    ax.set_ylim(*limits[1])
+    ax.set_zlim(*limits[2])
     ax.set_box_aspect((1, 1, 1))
 
 
@@ -163,19 +194,42 @@ def nearest(stamps, hands, t, tol_ns):
 
 
 # ----------------------------------------------------------------- plotting
-def draw_hand_2d(ax, hands, width, height, title):
+def draw_hand_2d(ax, hands, width, height, title, reproj=None):
     ax.clear()
-    ax.set_title(title, fontsize=9)
     ax.set_xlim(0, width)
     ax.set_ylim(height, 0)          # image coords: y down
     ax.set_aspect("equal")
     ax.set_xticks([]); ax.set_yticks([])
+
+    # Detected 2D landmarks (solid, per-hand colour).
     for label, pts in hands.items():
         color = HAND_COLORS.get(label, "#888888")
         for a, b in HAND_CONNECTIONS:
             ax.plot([pts[a, 0], pts[b, 0]], [pts[a, 1], pts[b, 1]],
                     "-", color=color, lw=1.5)
         ax.scatter(pts[:, 0], pts[:, 1], s=10, color=color, zorder=3)
+
+    # Reprojected triangulated 3D (dashed magenta + x), plus mean error vs the
+    # detection in this view.
+    err_txt = ""
+    if reproj:
+        errs = []
+        for label, rp in reproj.items():
+            fin = np.all(np.isfinite(rp), axis=1)
+            for a, b in HAND_CONNECTIONS:
+                if fin[a] and fin[b]:
+                    ax.plot([rp[a, 0], rp[b, 0]], [rp[a, 1], rp[b, 1]],
+                            "--", color=REPROJECT_COLOR, lw=1.0, zorder=4)
+            ax.scatter(rp[fin, 0], rp[fin, 1], s=14, marker="x",
+                       color=REPROJECT_COLOR, zorder=5)
+            det = hands.get(label)
+            if det is not None:
+                m = fin & np.all(np.isfinite(det), axis=1)
+                if m.any():
+                    errs.append(np.linalg.norm(rp[m] - det[m], axis=1))
+        if errs:
+            err_txt = f"  reproj {np.concatenate(errs).mean():.1f}px"
+    ax.set_title(title + err_txt, fontsize=9)
 
 
 def draw_cameras_3d(ax, centers, axes_dirs, names):
@@ -190,14 +244,15 @@ def draw_cameras_3d(ax, centers, axes_dirs, names):
                   color=color, length=1.0, normalize=False, alpha=0.7)
 
 
-def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info):
+def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info, limits):
+    # Preserve the user's current view orientation across the per-frame clear.
+    elev, azim = ax.elev, ax.azim
     ax.clear()
     ax.set_title(info, fontsize=9)
     ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)"); ax.set_zlabel("Z (m)")
 
     draw_cameras_3d(ax, centers, axes_dirs, names)
 
-    all_pts = [np.array([centers[n] for n in names])]
     for label, J in joints_by_hand.items():
         color = HAND_COLORS.get(label, "#888888")
         fin = np.all(np.isfinite(J), axis=1)
@@ -207,8 +262,9 @@ def draw_hand_3d(ax, joints_by_hand, centers, axes_dirs, names, info):
                         [J[a, 2], J[b, 2]], "-", color=color, lw=2)
         ax.scatter(J[fin, 0], J[fin, 1], J[fin, 2], s=18, color=color,
                    depthshade=False)
-        all_pts.append(J[fin])
-    set_axes_equal_3d(ax, np.vstack(all_pts))
+
+    apply_limits_3d(ax, limits)       # FIXED limits every frame
+    ax.view_init(elev=elev, azim=azim)
 
 
 # --------------------------------------------------------------------- main
@@ -257,35 +313,64 @@ def main():
     # Inter-step wall times (s), scaled by replay speed.
     dts = np.diff(timeline).astype(float) / 1e9 / max(REPLAY_SPEED, 1e-6)
 
+    cam_a, cam_b = TRIANGULATE_CAMERAS
+
+    # FIXED 3D limits: one pass over the whole log to bound every triangulated
+    # joint + the camera positions, so the 3D view never rescales during replay.
+    bounds = [np.array([centers[n] for n in cam_names])]
+    for t in timeline.tolist():
+        ha = nearest(*indexed[cam_a], int(t), tol_ns)
+        hb = nearest(*indexed[cam_b], int(t), tol_ns)
+        for label in set(ha) & set(hb):
+            J = triangulate_hand(ha[label], hb[label], P[cam_a], P[cam_b])
+            bounds.append(J[np.all(np.isfinite(J), axis=1)])
+    limits3d = equal_cube_limits(np.vstack(bounds))
+    print("fixed 3D limits (m): "
+          f"X{tuple(np.round(limits3d[0], 2))} "
+          f"Y{tuple(np.round(limits3d[1], 2))} "
+          f"Z{tuple(np.round(limits3d[2], 2))}")
+
     # Figure: 3 camera 2D views on top, one 3D view spanning the bottom.
     fig = plt.figure(figsize=(13, 8))
     gs = GridSpec(2, 3, figure=fig, height_ratios=[1, 1.6])
     ax2d = [fig.add_subplot(gs[0, i]) for i in range(3)]
     ax3d = fig.add_subplot(gs[1, :], projection="3d")
-    cam_a, cam_b = TRIANGULATE_CAMERAS
 
     def update(step):
         t = int(timeline[step])
         per_cam = {n: nearest(*indexed[n], t, tol_ns) for n in cam_names}
-        # 2D: up to three cameras (pad if the log has fewer).
-        for k in range(3):
-            if k < len(cam_names):
-                name = cam_names[k]
-                w, h = resolution[name]
-                draw_hand_2d(ax2d[k], per_cam[name], w, h, f"{name} (2D)")
-            else:
-                ax2d[k].clear(); ax2d[k].axis("off")
-        # 3D: triangulate the chosen pair for every hand present in both.
+
+        # Triangulate the chosen pair for every hand present in both views.
         joints = {}
         ha, hb = per_cam.get(cam_a, {}), per_cam.get(cam_b, {})
         for label in set(ha) & set(hb):
             joints[label] = triangulate_hand(ha[label], hb[label],
                                              P[cam_a], P[cam_b])
+
+        # Reproject the 3D joints back onto each camera (optional QA overlay).
+        reproj_by_cam = {}
+        if ENABLE_REPROJECT:
+            for name in cam_names:
+                reproj_by_cam[name] = {
+                    label: project_points(P[name], J)
+                    for label, J in joints.items()
+                }
+
+        # 2D: up to three cameras (pad if the log has fewer).
+        for k in range(3):
+            if k < len(cam_names):
+                name = cam_names[k]
+                w, h = resolution[name]
+                draw_hand_2d(ax2d[k], per_cam[name], w, h, f"{name} (2D)",
+                             reproj=reproj_by_cam.get(name))
+            else:
+                ax2d[k].clear(); ax2d[k].axis("off")
+
         secs = (t - int(timeline[0])) / 1e9
         info = (f"3D hand  ({cam_a} + {cam_b})   "
                 f"t={secs:5.2f}s   step {step + 1}/{len(timeline)}   "
                 f"hands: {sorted(joints) or 'none'}")
-        draw_hand_3d(ax3d, joints, centers, axes_dirs, cam_names, info)
+        draw_hand_3d(ax3d, joints, centers, axes_dirs, cam_names, info, limits3d)
 
     fig.tight_layout()
     plt.show(block=False)
