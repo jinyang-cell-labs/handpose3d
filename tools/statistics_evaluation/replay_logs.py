@@ -29,7 +29,7 @@ LOG_PATH = (
     "handpose_log_20260626_155546.jsonl"
 )
 # The two cameras (by name, as in the log meta) to triangulate the 3D hand from.
-TRIANGULATE_CAMERAS = ("camera0", "camera2")
+TRIANGULATE_CAMERAS = ("camera1", "camera2")
 # Replay speed: 1.0 = real time, 2.0 = twice as fast, 0.5 = half speed.
 REPLAY_SPEED = 1.0
 # Which hand to show: "Left", "Right", or None for whatever is present.

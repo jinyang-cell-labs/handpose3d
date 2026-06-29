@@ -16,13 +16,24 @@ vector ``r`` (3) + a translation ``t`` (3). For each joint i:
     X_cam   = R_cw @ X_world + t_cw                # world -> camera (extrinsics)
     uv_i    = K @ (X_cam / X_cam.z)                # pinhole (undistorted)
 
-Cost (minimised with Levenberg-Marquardt via scipy.optimize.least_squares):
+Cost (minimised via scipy.optimize.least_squares):
 
-    sum_i || uv_i - uv_detected_i ||^2
+    sum_i || uv_i - uv_detected_i ||^2  +  cheirality penalty
 
-OpenCV ``solvePnP`` seeds the optimisation (good initial guess avoids the
-near-planar flip ambiguity / local minima); the least-squares step then refines
-exactly the reprojection cost above.
+The reprojection term alone is blind to the front/back mirror: negating a point
+in the camera frame ``(X,Y,Z) -> (-X,-Y,-Z)`` leaves ``X/Z`` (the pixel)
+unchanged, so the true hand at ``+z`` and its reflection behind the camera are
+*both* global minima. We break that degeneracy with a one-sided **cheirality
+penalty** ``w * relu(margin - X_cam.z)`` per joint: zero once every joint is at
+least ``margin`` in front of the camera, and a growing cost on the mirror side.
+This is camera-intrinsic prior knowledge (the hand is physically in front of the
+lens), not information from any other camera.
+
+Seed: a constant pose — the hand ``SEED_DEPTH_M`` in front of the camera along
+its optical axis, hand-local frame aligned with the camera frame
+(``R_world_hand = R_world_cam``). It uses only the source camera and does not
+bias toward either flip; the cheirality penalty keeps the refinement on the
+``+z`` side. (OpenCV ``solvePnP`` is still available via ``use_pnp_init=True``.)
 
 The pose comes out in the world frame, so independent per-camera estimates are
 directly comparable — agreement across cameras is a calibration sanity check.
@@ -39,6 +50,15 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
 N_LANDMARKS = 21
+
+# Constant-seed depth: how far in front of the camera (m, along its optical
+# axis) to place the hand-local origin for the initial guess.
+SEED_DEPTH_M = 0.5
+# Cheirality penalty defaults: keep every joint at least CHEIRALITY_MARGIN_M (m)
+# in front of the camera; CHEIRALITY_WEIGHT_PX_PER_M scales the metre violation
+# into the pixel-residual units the reprojection term lives in.
+CHEIRALITY_MARGIN_M = 0.05
+CHEIRALITY_WEIGHT_PX_PER_M = 1000.0
 
 
 # --------------------------------------------------------------------- helpers
@@ -67,19 +87,26 @@ def _pose_to_matrix(rotvec, t):
 
 
 # ------------------------------------------------------------------- residuals
-def _residuals(params, views):
+def _residuals(params, views, cheir_margin=0.0, cheir_weight=0.0):
     """Stacked reprojection residuals over all views for a shared T_world_hand.
 
     ``views`` is a list of dicts: {K, R_cw, t_cw, X_hand (n,3), uv (n,2)} already
     filtered to finite joints. ``params`` = [rx,ry,rz, tx,ty,tz].
+
+    When ``cheir_weight > 0`` a one-sided cheirality penalty
+    ``cheir_weight * relu(cheir_margin - X_cam.z)`` is appended per joint per
+    view, pushing the solution to keep every joint in front of the camera and so
+    breaking the front/back mirror degeneracy of the pure reprojection cost.
     """
     R_wh = Rotation.from_rotvec(params[:3]).as_matrix()
     t_wh = params[3:6]
     out = []
     for v in views:
         X_world = v["X_hand"] @ R_wh.T + t_wh
-        uv, _ = _project(v["K"], v["R_cw"], v["t_cw"], X_world)
+        uv, z = _project(v["K"], v["R_cw"], v["t_cw"], X_world)
         out.append((uv - v["uv"]).ravel())
+        if cheir_weight > 0.0:
+            out.append(cheir_weight * np.maximum(cheir_margin - z, 0.0))
     return np.concatenate(out) if out else np.zeros(0)
 
 
@@ -169,8 +196,10 @@ def _pnp_init(K, R_cw, t_cw, X_hand, uv, distortion):
 
 
 def estimate_hand_pose(K, T_world_cam, landmarks_image, landmarks_world,
-                       *, distortion=None, init_pose=None, use_pnp_init=True,
-                       loss="linear", f_scale=4.0, max_nfev=200):
+                       *, distortion=None, init_pose=None, use_pnp_init=False,
+                       loss="linear", f_scale=4.0, max_nfev=200,
+                       cheirality_margin=CHEIRALITY_MARGIN_M,
+                       cheirality_weight=CHEIRALITY_WEIGHT_PX_PER_M):
     """Estimate ``T_world_hand`` for ONE camera. Returns a ``PoseResult``.
 
     Args:
@@ -180,11 +209,16 @@ def estimate_hand_pose(K, T_world_cam, landmarks_image, landmarks_world,
         landmarks_world: (21,3) MediaPipe hand-local metric model (metres).
         distortion: optional (k1,k2,p1,p2[,k3]) for the solvePnP seed only; the
             refinement is pinhole (landmarks are assumed undistorted).
-        init_pose: optional (4,4) T_world_hand initial guess (overrides PnP).
-        use_pnp_init: seed with OpenCV solvePnP (recommended).
+        init_pose: optional (4,4) T_world_hand initial guess (overrides the seed).
+        use_pnp_init: seed with OpenCV solvePnP instead of the constant seed.
+            Off by default — the constant seed + cheirality penalty avoids the
+            near-planar flip that solvePnP can fall into.
         loss: scipy least_squares loss ("linear", "soft_l1", "huber", ...).
         f_scale: robust-loss soft threshold (px) when loss != "linear".
         max_nfev: max optimiser iterations.
+        cheirality_margin: keep every joint this far (m) in front of the camera.
+        cheirality_weight: penalty scale (px per m of depth violation); 0 disables
+            the cheirality term (pure reprojection — front/back ambiguous).
     """
     filt, full, idx = _prepare_view(
         K, T_world_cam, landmarks_image, landmarks_world)
@@ -207,17 +241,25 @@ def estimate_hand_pose(K, T_world_cam, landmarks_image, landmarks_world,
         except Exception:  # noqa: BLE001  (cv2 missing / degenerate)
             p0 = None
     if p0 is None:
-        # Crude fallback: identity rotation, translation = camera centre + 0.5 m
-        # along its optical axis (keeps the hand in front of the camera).
+        # Constant seed: hand SEED_DEPTH_M in front of the camera along its
+        # optical axis, hand-local frame aligned with the camera frame
+        # (R_world_hand = R_world_cam). Uses only the source camera and does not
+        # bias toward either flip; the cheirality penalty keeps the +z side.
         R_wc = filt["R_cw"].T
         cam_c = -R_wc @ filt["t_cw"]
-        p0 = np.concatenate([np.zeros(3), cam_c + R_wc @ np.array([0, 0, 0.5])])
+        p0 = np.concatenate([
+            Rotation.from_matrix(R_wc).as_rotvec(),
+            cam_c + R_wc @ np.array([0.0, 0.0, SEED_DEPTH_M]),
+        ])
 
     # ---- non-linear refinement -----------------------------------------
-    method = "lm" if loss == "linear" else "trf"
+    # The relu cheirality penalty is non-smooth, so use the trust-region solver
+    # (trf) whenever it is active; lm only for the pure-reprojection case.
+    use_cheir = cheirality_weight > 0.0
+    method = "lm" if (loss == "linear" and not use_cheir) else "trf"
     sol = least_squares(
-        _residuals, p0, args=([filt],), method=method,
-        loss=loss, f_scale=f_scale, max_nfev=max_nfev,
+        _residuals, p0, args=([filt], cheirality_margin, cheirality_weight),
+        method=method, loss=loss, f_scale=f_scale, max_nfev=max_nfev,
     )
     res = _finalize(sol.x, [full], "ok (single camera)")
     res.success = bool(sol.success or sol.status > 0)
@@ -226,7 +268,9 @@ def estimate_hand_pose(K, T_world_cam, landmarks_image, landmarks_world,
 
 
 def estimate_hand_pose_multicam(observations, *, init_pose=None,
-                                loss="linear", f_scale=4.0, max_nfev=300):
+                                loss="linear", f_scale=4.0, max_nfev=300,
+                                cheirality_margin=CHEIRALITY_MARGIN_M,
+                                cheirality_weight=CHEIRALITY_WEIGHT_PX_PER_M):
     """Fuse several cameras into ONE shared ``T_world_hand``.
 
     ``observations``: list of dicts, each with keys
@@ -262,9 +306,12 @@ def estimate_hand_pose_multicam(observations, *, init_pose=None,
                                   ob["landmarks_image"], ob["landmarks_world"])
         p0 = np.concatenate([seed.rotvec, seed.translation])
 
-    method = "lm" if loss == "linear" else "trf"
-    sol = least_squares(_residuals, p0, args=(filts,), method=method,
-                        loss=loss, f_scale=f_scale, max_nfev=max_nfev)
+    use_cheir = cheirality_weight > 0.0
+    method = "lm" if (loss == "linear" and not use_cheir) else "trf"
+    sol = least_squares(_residuals, p0,
+                        args=(filts, cheirality_margin, cheirality_weight),
+                        method=method, loss=loss, f_scale=f_scale,
+                        max_nfev=max_nfev)
     res = _finalize(sol.x, fulls, "multicam")
     res.success = bool(sol.success or sol.status > 0)
     res.message = f"multicam ({len(filts)} views): {sol.message}"
