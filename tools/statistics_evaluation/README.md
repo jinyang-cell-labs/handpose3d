@@ -30,7 +30,10 @@ source start_evaluation.bash
 
 - **numpy / scipy** — linear algebra, DLT triangulation, `scipy.optimize.least_squares`
   for non-linear refinement (bundle-adjustment-style problems).
-- **matplotlib** (incl. `mpl_toolkits.mplot3d`) — 2D and 3D plots.
+- **matplotlib** (incl. `mpl_toolkits.mplot3d`) — 2D and 3D plots. PyQt5 is
+  installed to provide the interactive `QtAgg` backend, since a pyenv venv has
+  no tkinter/Qt of its own (without it matplotlib falls back to headless `agg`
+  and no window opens).
 - **opencv-python** — `triangulatePoints`, `projectPoints`, `Rodrigues`.
 - **pandas** — wrangling the per-frame records.
 

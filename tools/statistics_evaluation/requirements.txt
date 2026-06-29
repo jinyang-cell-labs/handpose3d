@@ -4,6 +4,9 @@
 numpy>=1.26          # arrays / linear algebra (DLT triangulation, etc.)
 scipy>=1.11          # non-linear optimisation (least_squares) + spatial transforms
 matplotlib>=3.8      # 2D and 3D plotting (mpl_toolkits.mplot3d)
+PyQt5>=5.15          # interactive matplotlib backend (QtAgg) so windows open;
+                     # self-contained wheel — needed because the pyenv venv has
+                     # no tkinter/Qt of its own
 opencv-python>=4.8   # triangulatePoints / projectPoints / Rodrigues helpers
 pandas>=2.1          # tabular wrangling of the per-frame records
 pyyaml>=6.0          # read the calibration yaml when needed
