@@ -65,3 +65,12 @@
     publish_tf: true                      # static TF world -> cam_i
     publish_pose: true                    # also publish extrinsics as geometry_msgs/PoseArray
     camera_info_topic_template: "{camera}/camera_info"
+
+    # ---- board pose tracker (single camera; board_pose.launch.py) ----------
+    # Detects the board in ONE camera, derives its pose from that camera's
+    # intrinsics (intrinsics_file), broadcasts <camera> -> board over TF, and
+    # republishes the image with the board axes drawn for eye-alignment.
+    board_pose.camera: ""                 # "" = camera_names[0]; or "camera1", ...
+    board_pose.board_frame: "calib_board" # child TF frame for the board
+    board_pose.axis_length: 0.1           # drawn/RViz axis length [m]
+    board_pose.image_topic: ""            # "" = /<camera>/board_pose/image_axes

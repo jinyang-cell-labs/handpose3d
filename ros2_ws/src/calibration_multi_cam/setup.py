@@ -28,6 +28,7 @@ setup(
             "intrinsic_calibrator_node = calibration_multi_cam.intrinsic_calibrator_node:main",
             "extrinsic_calibrator_node = calibration_multi_cam.extrinsic_calibrator_node:main",
             "publisher_node = calibration_multi_cam.publisher_node:main",
+            "board_pose_node = calibration_multi_cam.board_pose_node:main",
         ],
     },
 )

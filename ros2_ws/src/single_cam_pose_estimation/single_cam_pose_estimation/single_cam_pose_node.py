@@ -48,7 +48,7 @@ Inputs (per camera in ``camera_names``)
     <cam>/image_raw/landmarks/hands   handpose3d_msgs/HandLandmarks
     <cam>/image_raw                   sensor_msgs/Image          (QA overlay)
     <cam>/camera_info                 sensor_msgs/CameraInfo     (latched)
-    extrinsics_file (T_world_cam yaml, from calibration_multi_cam)
+    TF: world -> <cam>  (static, from calibration_multi_cam) == T_world_cam
 
 Outputs
 -------
@@ -59,13 +59,11 @@ Outputs
     TF: world -> <cam>_hand_{Left,Right}          (optional)
 """
 
-import os
 from collections import deque
 
 import cv2
 import numpy as np
 import rclpy
-import yaml
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point, Pose, PoseArray, PoseStamped, TransformStamped
 from rclpy.node import Node
@@ -75,10 +73,11 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
+from rclpy.time import Time
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import ColorRGBA
-from tf2_ros import TransformBroadcaster
+from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 from handpose3d_msgs.msg import HandLandmarks
@@ -128,12 +127,10 @@ class SingleCamPoseNode(Node):
         self.declare_parameter("image_suffix", "/image_raw")
         self.declare_parameter("landmarks_suffix", "/image_raw/landmarks/hands")
 
-        self.declare_parameter(
-            "extrinsics_file",
-            "/workspace/ros2_ws/src/calibration_multi_cam/config/extrinsics.yaml",
-        )
-        # Output frame. Empty -> use the extrinsics file's world_frame (the first
-        # camera), matching the TF tree published by calibration_multi_cam.
+        # Extrinsics (T_world_cam, cam->world) are resolved from TF: the static
+        # world -> camera_i transforms published by calibration_multi_cam.
+        # Output/world frame. Empty -> camera_names[0] (the rig's world camera),
+        # matching the TF tree root published by calibration_multi_cam.
         self.declare_parameter("world_frame", "")
 
         # Upstream landmarks are already in the undistorted pinhole image
@@ -180,7 +177,6 @@ class SingleCamPoseNode(Node):
             "camera_info_topics", "/camera_info"
         )
 
-        self.extrinsics_file = self.get_parameter("extrinsics_file").value
         self.landmarks_undistorted = bool(
             self.get_parameter("landmarks_undistorted").value
         )
@@ -206,13 +202,17 @@ class SingleCamPoseNode(Node):
         self.joint_size = float(self.get_parameter("joint_size").value)
         self.line_width = float(self.get_parameter("line_width").value)
 
-        # ---- extrinsics: T_world_cam (cam->world) per camera + world frame -
-        self.T_world_cam, ext_world_frame = self._load_extrinsics(
-            self.extrinsics_file
-        )
+        # ---- extrinsics: T_world_cam (cam->world) resolved from TF ----------
+        # The calibration_multi_cam publisher emits static world -> camera_i
+        # transforms; world -> camera_i IS T_world_cam (cam->world). Resolved
+        # asynchronously (TF may arrive after startup) by _resolve_extrinsics_tf.
+        # Convention: camera_names[0] is the world/origin camera.
         self.world_frame = (
-            self.get_parameter("world_frame").value or ext_world_frame
+            self.get_parameter("world_frame").value or self.camera_names[0]
         )
+        self.T_world_cam = {n: None for n in self.camera_names}
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # ---- per-camera calibration state (filled from camera_info) --------
         self.calib = {n: None for n in self.camera_names}     # {k,d,model,size}
@@ -277,12 +277,17 @@ class SingleCamPoseNode(Node):
 
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
 
+        # Poll TF for the world -> camera_i extrinsics until every camera is
+        # resolved (static TF is latched, so this normally succeeds within a
+        # tick or two of the publisher being up).
+        self._ext_timer = self.create_timer(0.5, self._resolve_extrinsics_tf)
+
         self.get_logger().info(
             f"single_cam_pose_node up: cameras={self.camera_names}, "
             f"world_frame='{self.world_frame}', "
             f"landmarks_undistorted={self.landmarks_undistorted}, "
             f"reproject_overlay={self.reproject_overlay}; waiting for "
-            "camera_info per camera...")
+            "camera_info + extrinsics TF per camera...")
 
     # ------------------------------------------------------------------ setup
     def _resolve_topics(self, param, suffix):
@@ -300,25 +305,67 @@ class SingleCamPoseNode(Node):
             return vals
         return [name + suffix for name in self.camera_names]
 
-    def _load_extrinsics(self, path):
-        """Load ``T_world_cam`` (4x4, camera->world) per camera + world frame.
+    def _resolve_extrinsics_tf(self):
+        """Resolve T_world_cam (cam->world) from the static TF tree.
 
-        Returns ``({name: T_world_cam (4,4)}, world_frame)``. The PnP estimator
-        consumes ``T_world_cam`` directly (it computes world->cam internally).
+        ``lookup_transform(world, cam)`` yields the cam->world transform, which
+        is exactly ``T_world_cam``. The world camera maps to identity. Runs on a
+        timer until every camera is resolved, then cancels itself.
         """
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Extrinsics file not found: {path}")
-        with open(path, "r") as f:
-            data = yaml.safe_load(f)
-        world_frame = data.get("world_frame", "camera0")
-        cameras = data["cameras"]
-        ext = {}
-        for name in self.camera_names:
-            if name not in cameras:
-                raise KeyError(f"No extrinsics for camera '{name}' in {path}")
-            ext[name] = np.asarray(
-                cameras[name]["T_world_cam"], dtype=float).reshape(4, 4)
-        return ext, world_frame
+        pending = [n for n in self.camera_names if self.T_world_cam[n] is None]
+        for name in pending:
+            if name == self.world_frame:
+                T = np.eye(4)               # world camera: identity, no lookup
+            else:
+                try:
+                    tf = self.tf_buffer.lookup_transform(
+                        self.world_frame, name, Time())
+                except TransformException:
+                    continue                # not in the buffer yet; retry
+                T = self._tf_to_matrix(tf)
+            self.T_world_cam[name] = T
+            self.get_logger().info(
+                f"[{name}] extrinsics from TF ({self.world_frame} -> {name}).")
+            self._finalize(name)
+
+        if all(self.T_world_cam[n] is not None for n in self.camera_names):
+            self._ext_timer.cancel()
+        elif pending:
+            self.get_logger().warn(
+                f"waiting for extrinsics TF (world='{self.world_frame}') for "
+                f"{[n for n in self.camera_names if self.T_world_cam[n] is None]}; "
+                "is calibration_multi_cam publishing? (publish_tf: true)",
+                throttle_duration_sec=5.0)
+
+    @staticmethod
+    def _tf_to_matrix(tf):
+        """geometry_msgs/TransformStamped -> 4x4 (source->target) matrix."""
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        T = np.eye(4)
+        T[:3, :3] = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+        T[:3, 3] = [t.x, t.y, t.z]
+        return T
+
+    def _finalize(self, name):
+        """Build the reprojection matrix + undistort map once a camera has BOTH
+        intrinsics (camera_info) and extrinsics (TF); then mark it ready."""
+        if (self.ready[name] or self.calib[name] is None
+                or self.T_world_cam[name] is None):
+            return
+        K = self.calib[name]["k"]
+        d = self.calib[name]["d"]
+        w, h = self.calib[name]["size"]
+        # Reprojection projection matrix P = K[R_cw|t_cw] (world->cam).
+        R_cw, t_cw = pe.world_to_cam(self.T_world_cam[name])
+        self.P[name] = K @ np.hstack([R_cw, t_cw.reshape(3, 1)])
+        if self.landmarks_undistorted and w and h:
+            map1, map2 = cv2.initUndistortRectifyMap(
+                K, d, None, K, (w, h), cv2.CV_16SC2)
+            self.undistort_map[name] = (map1, map2)
+        self.ready[name] = True
+        self.get_logger().info(
+            f"[{name}] ready (intrinsics + extrinsics); estimating.")
 
     def _on_camera_info(self, msg, name):
         if self.calib[name] is not None:
@@ -333,15 +380,8 @@ class SingleCamPoseNode(Node):
             "model": (msg.distortion_model or "plumb_bob").lower(),
             "size": (int(msg.width), int(msg.height)),
         }
-        # Reprojection projection matrix P = K[R_cw|t_cw] (world->cam).
-        R_cw, t_cw = pe.world_to_cam(self.T_world_cam[name])
-        self.P[name] = K @ np.hstack([R_cw, t_cw.reshape(3, 1)])
-        if self.landmarks_undistorted and msg.width and msg.height:
-            map1, map2 = cv2.initUndistortRectifyMap(
-                K, d, None, K, (msg.width, msg.height), cv2.CV_16SC2)
-            self.undistort_map[name] = (map1, map2)
-        self.ready[name] = True
-        self.get_logger().info(f"Captured intrinsics for {name}; estimating.")
+        self.get_logger().info(f"[{name}] captured intrinsics.")
+        self._finalize(name)   # completes once extrinsics TF has also arrived
 
     def _on_image(self, msg, name):
         self.image_buffers[name].append((self._stamp_ns(msg.header.stamp), msg))

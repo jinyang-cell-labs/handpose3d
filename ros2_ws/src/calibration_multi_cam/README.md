@@ -28,6 +28,33 @@ ros2 service call /calibration_extrinsic/calibrate std_srvs/srv/Trigger {}     #
 ros2 launch calibration_multi_cam publish.launch.py
 ```
 
+## Board pose tracker (single camera)
+
+A standalone visualization/debugging aid: pick **one** camera, detect the board
+live, and recover its pose from that camera's already-calibrated intrinsics. It
+broadcasts the board over TF and draws the axes back onto the image so the
+detection can be eye-aligned in RViz.
+
+```bash
+# needs intrinsics.yaml (stage 1) for the selected camera
+ros2 launch calibration_multi_cam board_pose.launch.py                 # camera_names[0]
+ros2 launch calibration_multi_cam board_pose.launch.py camera:=camera1 # any camera
+```
+
+- **TF** — dynamic `<camera> → board_pose.board_frame` (`calib_board`),
+  `T_cam_target`, stamped with the image time. The node also latches the static
+  `world → camera_i` rig from `extrinsics_file`, so the board is reachable from
+  the world frame **whichever camera you track** (without it, RViz pinned to
+  `camera0` only shows the board when tracking `camera0` — every other camera's
+  frame is disconnected from the fixed frame). Falls back to fixed-frame =
+  tracked camera if extrinsics aren't calibrated yet.
+- **Annotated image** — `/<camera>/board_pose/image_axes`: the input frame with
+  detected corners (green dots) and the board axes (`drawFrameAxes`) drawn on.
+
+Reuses the same `calibration.yaml`; the `board_pose.*` keys select the camera,
+TF child frame, axis length, and output image topic. The launch templates the
+bundled `board_pose.rviz` so the Image panel follows the `camera:=` argument.
+
 Collection is source-agnostic — `ros2 bag play` of recorded image topics works
 exactly like live cameras. Pairs directly with the `multi_cam_stream` package.
 
@@ -79,6 +106,7 @@ cameras:
 | `intrinsic_calibrator_node.py` | stage 1 node |
 | `extrinsic_calibrator_node.py` | stage 2 node |
 | `publisher_node.py` | loads both files; CameraInfo + TF/Pose |
+| `board_pose_node.py` | single-camera board pose: PnP → TF + axes drawn on image |
 
 The solver is validated end-to-end on synthetic data (known rig → project →
 recover): intrinsics to <0.1%, extrinsics to <0.02 mm / 0.002° after BA.
