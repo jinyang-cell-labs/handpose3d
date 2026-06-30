@@ -1,0 +1,63 @@
+single_cam_pose_node:
+  ros__parameters:
+    # The cameras to estimate from — ANY number. Each is processed
+    # independently (its own landmarks/camera_info/pose), all in the world
+    # frame, so the separate monocular estimates can be compared in one scene.
+    camera_names: ["camera0", "camera1", "camera2"]
+
+    # Per-camera topics. Leave empty ([""]) to derive them from camera_names:
+    #   landmark_topics    -> <cam> + landmarks_suffix
+    #   image_topics       -> <cam> + image_suffix
+    #   camera_info_topics -> <cam>/camera_info
+    landmark_topics: [""]
+    image_topics: [""]
+    camera_info_topics: [""]
+    image_suffix: "/image_raw"
+    landmarks_suffix: "/image_raw/landmarks/hands"
+
+    # Extrinsics from calibration_multi_cam (T_world_cam 4x4 per camera). The
+    # output/world frame is taken from this file's world_frame (the first
+    # camera) unless world_frame below is set non-empty.
+    extrinsics_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/extrinsics.yaml"
+    world_frame: ""
+
+    # Upstream MediaPipe landmarks are already in the undistorted pinhole image
+    # (mediapie_landmarks_extraction enable_undistortion=true): reproject without
+    # distortion and undistort image_raw before overlaying. Set false only if the
+    # landmarks come from raw/distorted frames (the PnP cost is pinhole either
+    # way; this only affects the reprojection overlay).
+    landmarks_undistorted: true
+
+    # Drop detections below this handedness/detection score.
+    min_score: 0.5
+
+    # --- PnP cheirality penalty (breaks the front/back mirror) --------------
+    # Keep every joint at least cheirality_margin (m) in front of the camera;
+    # cheirality_weight scales the metre violation into pixel-residual units.
+    # Set cheirality_weight 0.0 for pure reprojection (front/back ambiguous).
+    cheirality_margin: 0.05
+    cheirality_weight: 1000.0
+
+    # --- 6-DoF hand pose output ---------------------------------------------
+    # PoseStamped per camera+hand (single_cam_pose/<cam>/hand_pose_{left,right})
+    # and a TF world -> <cam>_hand_<label> so RViz draws the hand-frame axes.
+    publish_hand_pose: true
+    publish_tf: true
+
+    # --- reprojection QA overlay (re-project the posed joints onto image_raw) -
+    reproject_overlay: true
+    reprojected_suffix: "/pose/reprojected"
+    # Draw the upstream 2D detection (green hollow dots) under the reprojected
+    # skeleton so the gap = reprojection error; mean error (px) is overlaid too.
+    draw_detected: true
+    line_thickness: 2
+    point_radius: 4
+    # Recent image_raw frames buffered per camera to pair with a (delayed)
+    # landmark message by timestamp, and the max stamp mismatch tolerated (s).
+    image_buffer_size: 30
+    image_match_tol: 0.05
+
+    # --- RViz 3D skeleton ---------------------------------------------------
+    markers_topic: "single_cam_pose/markers"
+    joint_size: 0.012     # m, sphere diameter
+    line_width: 0.006     # m, bone thickness

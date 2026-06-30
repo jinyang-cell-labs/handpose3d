@@ -26,10 +26,10 @@ from scipy.spatial.transform import Rotation
 # Absolute path to the log to replay.
 LOG_PATH = (
     "/home/jinyang/repo/handpose3d/tools/statistics_evaluation/logs/"
-    "handpose_log_20260626_155546.jsonl"
+    "handpose_log_20260630_085205.jsonl"
 )
 # The two cameras (by name, as in the log meta) to triangulate the 3D hand from.
-TRIANGULATE_CAMERAS = ("camera1", "camera2")
+TRIANGULATE_CAMERAS = ("camera0", "camera2")
 # Replay speed: 1.0 = real time, 2.0 = twice as fast, 0.5 = half speed.
 REPLAY_SPEED = 1.0
 # Which hand to show: "Left", "Right", or None for whatever is present.
@@ -45,7 +45,7 @@ ENABLE_REPROJECT = True
 # own colour (does not replace it).
 ENABLE_POSE_ESTIMATION = True
 # The single camera the pose is estimated from (needs its 2D + world landmarks).
-POSE_ESTIMATION_SOURCE = "camera1"
+POSE_ESTIMATION_SOURCE = "camera0"
 # Also reproject the estimated-pose hand onto all three cameras' 2D views (in a
 # third colour, distinct from detection and the triangulation reprojection).
 ENABLE_POSE_ESTIMATION_REPROJECT = True
