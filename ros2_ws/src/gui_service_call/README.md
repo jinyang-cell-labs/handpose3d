@@ -37,6 +37,7 @@ nicely; otherwise the raw response is stringified.
 |---|---|---|
 | Calibration | Calibrate Intrinsics | `/calibration_intrinsic/calibrate` |
 | Calibration | Calibrate Extrinsics | `/calibration_extrinsic/calibrate` |
+| Board Pose | Save Board Pose | `/calibration_board_pose/save_board_pose` |
 | Landmark Logging | Start Logging | `/mediapie_landmarks_node/start_log` |
 | Landmark Logging | Stop Logging | `/mediapie_landmarks_node/stop_log` |
 

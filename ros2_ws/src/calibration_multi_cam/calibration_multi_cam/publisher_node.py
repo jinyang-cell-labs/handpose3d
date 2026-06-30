@@ -7,6 +7,10 @@ Loads `intrinsics_file` (stage 1) and `extrinsics_file` (stage 2) and publishes:
     (K + distortion only; R and P are left empty/zero), latched.
   * the rig extrinsics as static TF (world -> camera) and a
     geometry_msgs/PoseArray on `~/extrinsics`, latched.
+  * if `board_pose_file` exists, the saved board pose as static TF
+    (<camera> -> <board_frame>), and the operator_body offset as static TF
+    (<board_frame> -> operator_body), completing the chain
+    world -> camera -> board -> operator_body so RViz shows the full tree.
 
 The world frame is the first camera (`extrinsics_file: world_frame`, default
 "camera0"); that camera's pose is identity, so no TF is emitted for it.
@@ -34,6 +38,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import CameraInfo
 from tf2_ros import StaticTransformBroadcaster
+
+from calibration_multi_cam import se3
 
 
 def _mat_to_quat(R):
@@ -85,6 +91,22 @@ class PublisherNode(Node):
         self.publish_pose = bool(self.declare_parameter("publish_pose", True).value)
         self.info_template = self.declare_parameter(
             "camera_info_topic_template", "{camera}/camera_info").value
+
+        # ---- board pose + operator_body (extends the static TF tree) -------
+        self.board_pose_file = self.declare_parameter(
+            "board_pose_file",
+            "/workspace/ros2_ws/src/calibration_multi_cam/config/board_pose.yaml",
+        ).value
+        self.board_frame = self.declare_parameter(
+            "board_pose.board_frame", "calib_board").value
+        self.publish_operator_body = bool(
+            self.declare_parameter("publish_operator_body", True).value)
+        self.operator_body_frame = self.declare_parameter(
+            "operator_body.frame", "operator_body").value
+        self.operator_body_position = list(
+            self.declare_parameter("operator_body.position", [0.0, 0.0, 0.0]).value)
+        self.operator_body_rotation = list(
+            self.declare_parameter("operator_body.rotation", [0.0, 0.0, 0.0]).value)
 
         self.latching_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.static_tf = StaticTransformBroadcaster(self)
@@ -162,10 +184,64 @@ class PublisherNode(Node):
                 pose.orientation.w = float(qw)
                 pose_array.poses.append(pose)
 
+        if self.publish_tf:
+            transforms.extend(self._board_and_operator_transforms(now))
         if self.publish_tf and transforms:
             self.static_tf.sendTransform(transforms)
         if self.publish_pose:
             self.pose_pub.publish(pose_array)
+
+    def _board_and_operator_transforms(self, now):
+        """Static TFs that hang the board (and operator_body) off the rig.
+
+          <camera_frame> -> <board_frame>     from board_pose_file (if present)
+          <board_frame>  -> <operator_body>   from operator_body.* params
+
+        The board TF is skipped (with a warning) when board_pose_file does not
+        exist yet — save it first via /calibration_board_pose/save_board_pose.
+        """
+        transforms = []
+        board_frame = self.board_frame
+        if os.path.isfile(self.board_pose_file):
+            try:
+                with open(self.board_pose_file, "r") as fh:
+                    bp = yaml.safe_load(fh) or {}
+                camera_frame = bp["camera_frame"]
+                board_frame = bp.get("board_frame", self.board_frame)
+                T = np.asarray(bp["T_cam_board"], dtype=np.float64)
+                transforms.append(self._make_tf(
+                    camera_frame, board_frame, T[:3, 3], _mat_to_quat(T[:3, :3]), now))
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(
+                    f"Failed to read board pose from {self.board_pose_file}: {exc}")
+        else:
+            self.get_logger().warning(
+                f"board_pose_file not found: {self.board_pose_file}; the board "
+                "TF (and so operator_body) will be disconnected. Save it with "
+                "/calibration_board_pose/save_board_pose first.")
+
+        if self.publish_operator_body:
+            R = se3.euler_deg_to_R(*self.operator_body_rotation)
+            p = np.asarray(self.operator_body_position, dtype=np.float64)
+            transforms.append(self._make_tf(
+                board_frame, self.operator_body_frame, p, _mat_to_quat(R), now))
+        return transforms
+
+    @staticmethod
+    def _make_tf(parent, child, p, quat, stamp):
+        qx, qy, qz, qw = quat
+        tf = TransformStamped()
+        tf.header.stamp = stamp
+        tf.header.frame_id = parent
+        tf.child_frame_id = child
+        tf.transform.translation.x = float(p[0])
+        tf.transform.translation.y = float(p[1])
+        tf.transform.translation.z = float(p[2])
+        tf.transform.rotation.x = float(qx)
+        tf.transform.rotation.y = float(qy)
+        tf.transform.rotation.z = float(qz)
+        tf.transform.rotation.w = float(qw)
+        return tf
 
     def _make_camera_info(self, cam, c, stamp):
         fx, fy, cx, cy = [float(v) for v in c["intrinsics"]]

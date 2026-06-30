@@ -74,3 +74,17 @@
     board_pose.board_frame: "calib_board" # child TF frame for the board
     board_pose.axis_length: 0.1           # drawn/RViz axis length [m]
     board_pose.image_topic: ""            # "" = /<camera>/board_pose/image_axes
+    # The /calibration_board_pose/save_board_pose Trigger service latches the
+    # current T_cam_board here; the publisher reads it back into static TF.
+    board_pose_file: "/workspace/ros2_ws/src/calibration_multi_cam/config/board_pose.yaml"
+
+    # ---- operator_body (rigid offset on the calibration board) -------------
+    # The board is mounted at a known, measured pose relative to the operator's
+    # body, so this defines the TF  <board_frame> -> operator_body. Combined
+    # with the saved board pose it completes the chain
+    #   world (camera0) -> <camera> -> board_frame -> operator_body
+    # letting hand poses be expressed in the operator_body frame.
+    operator_body.frame: "operator_body"  # child TF frame name
+    operator_body.position: [0.5, -0.5, 0.0]   # [x, y, z] in board_frame [m]
+    operator_body.rotation: [0.0, 90.0, 0.0]   # intrinsic XYZ euler [deg] (Rx,Ry,Rz)
+    publish_operator_body: true           # publisher emits board_frame -> operator_body

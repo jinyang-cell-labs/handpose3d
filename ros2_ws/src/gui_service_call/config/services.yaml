@@ -19,6 +19,11 @@ buttons:
     type: "std_srvs/srv/Trigger"
     group: "Calibration"
 
+  - label: "Save Board Pose"
+    service: "/calibration_board_pose/save_board_pose"
+    type: "std_srvs/srv/Trigger"
+    group: "Board Pose"
+
   - label: "Start Logging"
     service: "/mediapie_landmarks_node/start_log"
     type: "std_srvs/srv/Trigger"

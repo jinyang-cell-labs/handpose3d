@@ -16,6 +16,11 @@ frame with a valid detection it:
 Intrinsics must already exist for the selected camera (run intrinsic.launch.py
 first). Uses the same central ``calibration.yaml`` as the other nodes; only the
 parameters this node declares are read.
+
+It also offers a ``~/save_board_pose`` (std_srvs/srv/Trigger) service: calling
+it latches the most recent valid ``T_cam_board`` to ``board_pose_file`` (YAML),
+which the publisher node reads back to place the board (and the operator_body
+hanging off it) into the static TF tree.
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
+from std_srvs.srv import Trigger
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 from calibration_multi_cam import se3
@@ -80,6 +86,12 @@ class BoardPoseNode(Node):
         ).value
         self.world_frame_override = self.declare_parameter("world_frame", "").value
         self.board_frame = self.declare_parameter("board_pose.board_frame", "calib_board").value
+        # Where ``save_board_pose`` writes the latched T_cam_board (read back by
+        # the publisher node to put the board into the static TF tree).
+        self.board_pose_file = self.declare_parameter(
+            "board_pose_file",
+            "/workspace/ros2_ws/src/calibration_multi_cam/config/board_pose.yaml",
+        ).value
         self.axis_length = float(self.declare_parameter("board_pose.axis_length", 0.1).value)
         image_topic = self.declare_parameter("board_pose.image_topic", "").value
         self.image_topic = image_topic or f"/{self.camera}/board_pose/image_axes"
@@ -95,11 +107,15 @@ class BoardPoseNode(Node):
         self.sub = self.create_subscription(
             Image, self.topic, self._on_image, qos_profile_sensor_data
         )
+        self.save_srv = self.create_service(
+            Trigger, "~/save_board_pose", self._on_save_board_pose
+        )
         self.status_timer = self.create_timer(status_period, self._log_status)
 
         self._frames = 0                 # images received
         self._last_detected = 0          # corners in the most recent frame
         self._last_pose_ok = False       # pose recovered in the most recent frame
+        self._last_T = None              # most recent valid T_cam_board (4x4)
 
         self.world_frame = self._publish_rig_tf()
 
@@ -227,6 +243,7 @@ class BoardPoseNode(Node):
                 cv2.drawFrameAxes(img, self.K, self.dist, rvec, tvec, self.axis_length, 3)
                 self._broadcast_tf(T, msg.header.stamp)
                 self._last_pose_ok = True
+                self._last_T = T
 
         out = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
         out.header.stamp = msg.header.stamp
@@ -239,6 +256,38 @@ class BoardPoseNode(Node):
             T_cam_target[:3, 3], _mat_to_quat(T_cam_target[:3, :3]), stamp,
         )
         self.tf_broadcaster.sendTransform(tf)
+
+    def _on_save_board_pose(self, request, response):
+        """Latch the most recent T_cam_board to ``board_pose_file`` (YAML)."""
+        if self._last_T is None:
+            response.success = False
+            response.message = (
+                "No board pose available yet; point the board at "
+                f"{self.camera} until pose=OK, then call again."
+            )
+            self.get_logger().warning(response.message)
+            return response
+        out = {
+            "camera_frame": self.camera,
+            "board_frame": self.board_frame,
+            "T_cam_board": np.asarray(self._last_T, dtype=np.float64).tolist(),
+        }
+        try:
+            os.makedirs(os.path.dirname(self.board_pose_file) or ".", exist_ok=True)
+            with open(self.board_pose_file, "w") as fh:
+                yaml.safe_dump(out, fh, default_flow_style=None, sort_keys=False)
+        except Exception as exc:  # noqa: BLE001
+            response.success = False
+            response.message = f"Failed to write {self.board_pose_file}: {exc}"
+            self.get_logger().error(response.message)
+            return response
+        response.success = True
+        response.message = (
+            f"Saved T_cam_board ({self.camera} -> {self.board_frame}) to "
+            f"{self.board_pose_file}"
+        )
+        self.get_logger().info(response.message)
+        return response
 
     def _log_status(self):
         self.get_logger().info(

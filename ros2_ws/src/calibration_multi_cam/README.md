@@ -50,10 +50,32 @@ ros2 launch calibration_multi_cam board_pose.launch.py camera:=camera1 # any cam
   tracked camera if extrinsics aren't calibrated yet.
 - **Annotated image** — `/<camera>/board_pose/image_axes`: the input frame with
   detected corners (green dots) and the board axes (`drawFrameAxes`) drawn on.
+- **Save service** — `/calibration_board_pose/save_board_pose`
+  (`std_srvs/srv/Trigger`): latches the most recent valid `T_cam_board` to
+  `board_pose_file` (default `config/board_pose.yaml`). Point the board at the
+  tracked camera until status shows `pose=OK`, then call the service (a button
+  exists in `gui_service_call`).
 
 Reuses the same `calibration.yaml`; the `board_pose.*` keys select the camera,
 TF child frame, axis length, and output image topic. The launch templates the
 bundled `board_pose.rviz` so the Image panel follows the `camera:=` argument.
+
+### operator_body & the full TF chain
+
+The board is mounted at a known, measured offset from the operator's body, so
+`calibration.yaml` defines `operator_body.{position,rotation,frame}` as the
+rigid TF `<board_frame> → operator_body` (rotation is intrinsic-XYZ euler in
+degrees). Once `board_pose.yaml` is saved, `publish.launch.py` emits both the
+saved board TF (`<camera> → <board_frame>`) and the operator_body TF over
+`/tf_static` alongside the camera rig, completing the chain
+
+```
+world (camera0) → <camera> → <board_frame> → operator_body
+```
+
+so RViz can visualize the whole tree and hand poses can be expressed in the
+operator_body frame. The board TF is skipped (with a warning) until
+`board_pose.yaml` exists.
 
 Collection is source-agnostic — `ros2 bag play` of recorded image topics works
 exactly like live cameras. Pairs directly with the `multi_cam_stream` package.

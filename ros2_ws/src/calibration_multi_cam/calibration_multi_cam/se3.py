@@ -48,6 +48,24 @@ def compose(*transforms):
     return out
 
 
+def euler_deg_to_R(rx, ry, rz):
+    """Euler angles in **degrees** (intrinsic XYZ order) -> 3x3 rotation.
+
+    Intrinsic XYZ: rotate about the body X axis by ``rx``, then about the new
+    Y by ``ry``, then about the new Z by ``rz``. Equivalent matrix product is
+    ``R = Rx @ Ry @ Rz`` and matches
+    ``scipy.spatial.transform.Rotation.from_euler('xyz', [rx, ry, rz], degrees=True)``.
+    """
+    ax, ay, az = np.deg2rad([float(rx), float(ry), float(rz)])
+    cx, sx = np.cos(ax), np.sin(ax)
+    cy, sy = np.cos(ay), np.sin(ay)
+    cz, sz = np.cos(az), np.sin(az)
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
+    Ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    Rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+    return Rx @ Ry @ Rz
+
+
 def average_transforms(T_list):
     """Robust average of several 4x4 transforms via component-wise median of
     the axis-angle + translation parameterization. Good enough for an initial
