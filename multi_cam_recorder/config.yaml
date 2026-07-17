@@ -1,0 +1,38 @@
+# Multi-camera recorder configuration.
+#
+# cameras: initial device for each preview window — one entry per window
+#          (the list length sets how many windows the GUI shows). Each entry
+#          is an integer index (4 -> /dev/video4), a device path, or a stable
+#          /dev/v4l/by-id/ symlink (survives replug/renumbering). Use null
+#          for a window that starts empty. Every window also has a dropdown
+#          in the GUI to switch between detected capture devices at any time.
+# NOTE: with UVC webcams only the even-numbered node of each camera captures
+#       video; the odd sibling (video1, video3, ...) is a metadata node.
+cameras:
+  - 0    # Azurewave USB Camera
+  - 2    # icSpring IW 1000 webcam
+  - /dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._Arducam_OV9782_USB_Camera_UC852-video-index0
+  - null # empty window — pick a device in the GUI
+# Generic default per spec (4 cameras): [0, 2, 4, 6]
+
+# Capture settings applied to every camera.
+width: 1280
+height: 720
+fps: 30
+# FOURCC requested from the camera (MJPG lets USB webcams reach 30 fps at 720p).
+capture_fourcc: MJPG
+
+# Recording settings.
+# Codec + container for the files written to disk.
+record_fourcc: MJPG
+record_extension: avi
+# Where recording sessions are stored. Each session becomes a subfolder
+# session_YYYYmmdd_HHMMSS/ containing one video per camera, meta.yaml and
+# timestamps.csv (per-frame capture times for sync verification).
+output_dir: ~/recordings/multi_cam
+
+# Preview settings.
+# Preview refresh rate in the GUI (recording always runs at `fps`).
+preview_fps: 20
+# Grid columns for the preview layout (4 cameras -> 2x2).
+grid_columns: 2
