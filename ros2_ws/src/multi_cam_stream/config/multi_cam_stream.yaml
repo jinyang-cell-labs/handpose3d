@@ -3,8 +3,8 @@ camera_stream_node:
     # One entry per camera. `camera_names` sets the topic namespace
     # (<name>/image_raw); `camera_devices` are the matching V4L device indices
     # or paths. Find yours with:  v4l2-ctl --list-devices   (or: ls /dev/video*)
-    camera_names: ["camera0", "camera1", "camera2"]
-    camera_devices: ["0", "2","4"]
+    camera_names: ["camera0", "camera1"]
+    camera_devices: ["0", "2"]
 
     frame_rate: 30.0               # publish rate [Hz]
     capture_width: 1280

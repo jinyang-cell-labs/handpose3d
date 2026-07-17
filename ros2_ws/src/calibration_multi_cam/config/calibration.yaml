@@ -22,10 +22,10 @@
   ros__parameters:
 
     # ---- cameras (camera_names[0] is the world/origin camera) -------------
-    camera_names: ["camera0", "camera1", "camera2"]
+    camera_names: ["camera0", "camera1"]
     camera0.topic: "/camera0/image_raw"
     camera1.topic: "/camera1/image_raw"
-    camera2.topic: "/camera2/image_raw"
+    #camera2.topic: "/camera2/image_raw"
 
     # ---- calibration target (ethz-asl/kalibr AprilGrid convention) --------
     target.type: "aprilgrid"
