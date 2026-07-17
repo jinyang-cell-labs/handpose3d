@@ -19,7 +19,9 @@ File schemas
 ------------
 intrinsics_file::
     cameras:
-      camera0: {model, resolution: [w,h], intrinsics: [fx,fy,cx,cy], distortion: [k1,k2,p1,p2]}
+      camera0: {model, resolution: [w,h], intrinsics: [fx,fy,cx,cy], distortion: [4 floats]}
+        # model "pinhole-radtan": distortion [k1,k2,p1,p2] -> CameraInfo plumb_bob
+        # model "pinhole-equi":   distortion [k1,k2,k3,k4] -> CameraInfo equidistant
 extrinsics_file::
     world_frame: camera0
     cameras:
@@ -39,7 +41,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import CameraInfo
 from tf2_ros import StaticTransformBroadcaster
 
-from calibration_multi_cam import se3
+from calibration_multi_cam import camera_model, se3
 
 
 def _mat_to_quat(R):
@@ -252,9 +254,13 @@ class PublisherNode(Node):
         info.header.frame_id = cam
         info.width = w
         info.height = h
-        info.distortion_model = "plumb_bob"
-        # plumb_bob expects [k1, k2, t1, t2, k3]; radtan gives [k1, k2, p1, p2].
-        info.d = (dist + [0.0])[:5] if len(dist) == 4 else dist
+        if camera_model.model_of(c) == camera_model.EQUI:
+            info.distortion_model = "equidistant"  # 4-param fisheye [k1,k2,k3,k4]
+            info.d = dist[:4]
+        else:
+            info.distortion_model = "plumb_bob"
+            # plumb_bob expects [k1, k2, t1, t2, k3]; radtan gives [k1, k2, p1, p2].
+            info.d = (dist + [0.0])[:5] if len(dist) == 4 else dist
         info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
         # R and P intentionally left as zero arrays: intrinsics only.
         return info

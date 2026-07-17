@@ -8,7 +8,9 @@ board so it fills each camera's frame at several distances/angles. Then:
 
     ros2 service call /calibration_intrinsic/calibrate std_srvs/srv/Trigger {}
 
-runs cv2.calibrateCamera per camera (4-param radtan) and writes `intrinsics_file`.
+calibrates each camera with its configured projection model (`<camera>.model`:
+"pinhole-radtan" for normal lenses, "pinhole-equi" for wide-FOV fisheye) and
+writes `intrinsics_file`.
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_srvs.srv import Trigger
 
+from calibration_multi_cam import camera_model
 from calibration_multi_cam.intrinsics import calibrate_intrinsics
 from calibration_multi_cam.target import AprilGridTarget
 from calibration_multi_cam.view_buffer import MaximinViewBuffer, corner_features
@@ -36,8 +39,12 @@ class IntrinsicCalibratorNode(Node):
             self.declare_parameter("camera_names", ["camera0", "camera1"]).value
         )
         topics = {}
+        self.models = {}
         for cam in self.camera_names:
             topics[cam] = self.declare_parameter(f"{cam}.topic", f"/{cam}/image_raw").value
+            self.models[cam] = camera_model.check_model(
+                self.declare_parameter(f"{cam}.model", camera_model.RADTAN).value
+            )
 
         target_params = {
             "type": self.declare_parameter("target.type", "aprilgrid").value,
@@ -79,7 +86,8 @@ class IntrinsicCalibratorNode(Node):
         self.calibrate_srv = self.create_service(Trigger, "~/calibrate", self._on_calibrate)
         self.status_timer = self.create_timer(status_period, self._log_status)
         self.get_logger().info(
-            f"Intrinsic calibrator up. cameras={self.camera_names}, target={self.target}. "
+            f"Intrinsic calibrator up. cameras={self.camera_names}, "
+            f"models={self.models}, target={self.target}. "
             f"Fill each camera's frame with the board; call ~/calibrate when done."
         )
 
@@ -144,7 +152,8 @@ class IntrinsicCalibratorNode(Node):
                 continue
             try:
                 r = calibrate_intrinsics(self.target.object_points, self.obs[name].items,
-                                         self.resolution[name])
+                                         self.resolution[name],
+                                         model=self.models[name])
             except Exception as exc:  # noqa: BLE001
                 ok_all = False
                 msgs.append(f"{name}: calibration failed ({exc})")

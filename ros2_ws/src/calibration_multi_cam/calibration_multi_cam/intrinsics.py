@@ -1,16 +1,20 @@
-"""Per-camera intrinsic calibration (pinhole + radial-tangential).
+"""Per-camera intrinsic calibration (pinhole-radtan or pinhole-equi).
 
-Wraps ``cv2.calibrateCamera`` with ``CALIB_FIX_K3`` so the distortion vector is
-the 4-parameter ``[k1, k2, p1, p2]`` radtan model that matches kalibr's
-``pinhole-radtan``.
+Dispatches through ``camera_model``: ``cv2.calibrateCamera`` with
+``CALIB_FIX_K3`` for the 4-parameter ``[k1, k2, p1, p2]`` radtan model
+(kalibr's ``pinhole-radtan``), or ``cv2.fisheye.calibrate`` for the
+4-parameter equidistant ``[k1, k2, k3, k4]`` model (kalibr's
+``pinhole-equi``, for wide-FOV lenses).
 """
 from __future__ import annotations
 
-import cv2
 import numpy as np
 
+from calibration_multi_cam import camera_model
 
-def calibrate_intrinsics(object_points_all, observations, image_size, min_views=6,
+
+def calibrate_intrinsics(object_points_all, observations, image_size,
+                         model=camera_model.RADTAN, min_views=6,
                          reject_outliers=True, outlier_sigma=3.0,
                          outlier_floor_px=1.0, max_iters=10, min_corners_view=6):
     """Calibrate one camera, with iterative robust outlier rejection.
@@ -28,6 +32,8 @@ def calibrate_intrinsics(object_points_all, observations, image_size, min_views=
     observations : list of (point_ids (Mi,), image_points (Mi, 2))
         One entry per accepted view this camera contributed.
     image_size : (width, height)
+    model : str
+        ``camera_model.RADTAN`` or ``camera_model.EQUI``.
     min_views : int
         Minimum number of usable views required.
     reject_outliers : bool
@@ -42,10 +48,12 @@ def calibrate_intrinsics(object_points_all, observations, image_size, min_views=
 
     Returns
     -------
-    dict with keys: intrinsics [fx, fy, cx, cy], distortion [k1, k2, p1, p2],
-    resolution [w, h], reproj_rms (float), num_views (int), per_view_rms (list),
+    dict with keys: model, intrinsics [fx, fy, cx, cy], distortion (4 floats:
+    [k1, k2, p1, p2] radtan / [k1, k2, k3, k4] equi), resolution [w, h],
+    reproj_rms (float), num_views (int), per_view_rms (list),
     num_corners (int), num_rejected (int).
     """
+    camera_model.check_model(model)
     obj_pts = []
     img_pts = []
     for pids, pts in observations:
@@ -62,17 +70,16 @@ def calibrate_intrinsics(object_points_all, observations, image_size, min_views=
         )
 
     w, h = int(image_size[0]), int(image_size[1])
-    flags = cv2.CALIB_FIX_K3  # -> 4-param radtan [k1, k2, p1, p2]
 
     n_initial = sum(len(o) for o in obj_pts)
     for _ in range(max_iters):
-        rms, K, dist, rvecs, tvecs = cv2.calibrateCamera(
-            obj_pts, img_pts, (w, h), None, None, flags=flags
+        rms, K, dist, rvecs, tvecs = camera_model.calibrate_camera(
+            obj_pts, img_pts, (w, h), model
         )
         if not reject_outliers:
             break
         obj_pts, img_pts, removed = _reject_corner_outliers(
-            obj_pts, img_pts, K, dist, rvecs, tvecs,
+            obj_pts, img_pts, K, dist, rvecs, tvecs, model,
             outlier_sigma, outlier_floor_px, min_corners_view,
         )
         if len(obj_pts) < min_views:
@@ -83,11 +90,11 @@ def calibrate_intrinsics(object_points_all, observations, image_size, min_views=
             break
 
     dist = np.asarray(dist, dtype=np.float64).reshape(-1)
-    per_view = _per_view_rms(obj_pts, img_pts, K, dist, rvecs, tvecs)
+    per_view = _per_view_rms(obj_pts, img_pts, K, dist, rvecs, tvecs, model)
     n_final = sum(len(o) for o in obj_pts)
 
     return {
-        "model": "pinhole-radtan",
+        "model": model,
         "resolution": [w, h],
         "intrinsics": [float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2])],
         "distortion": [float(dist[0]), float(dist[1]), float(dist[2]), float(dist[3])],
@@ -99,7 +106,7 @@ def calibrate_intrinsics(object_points_all, observations, image_size, min_views=
     }
 
 
-def _reject_corner_outliers(obj_pts, img_pts, K, dist, rvecs, tvecs,
+def _reject_corner_outliers(obj_pts, img_pts, K, dist, rvecs, tvecs, model,
                             sigma, floor_px, min_corners_view):
     """Drop corners with a robustly-high reprojection error; rebuild views.
 
@@ -110,8 +117,8 @@ def _reject_corner_outliers(obj_pts, img_pts, K, dist, rvecs, tvecs,
     all_err = []
     proj_per_view = []
     for op, ip, rv, tv in zip(obj_pts, img_pts, rvecs, tvecs):
-        proj, _ = cv2.projectPoints(op, rv, tv, K, dist)
-        e = np.linalg.norm(ip.reshape(-1, 2) - proj.reshape(-1, 2), axis=1)
+        proj = camera_model.project_points(op, rv, tv, K, dist, model)
+        e = np.linalg.norm(ip.reshape(-1, 2) - proj, axis=1)
         proj_per_view.append(e)
         all_err.append(e)
     err = np.concatenate(all_err)
@@ -130,12 +137,11 @@ def _reject_corner_outliers(obj_pts, img_pts, K, dist, rvecs, tvecs,
     return new_obj, new_img, removed
 
 
-def _per_view_rms(obj_pts, img_pts, K, dist, rvecs, tvecs):
+def _per_view_rms(obj_pts, img_pts, K, dist, rvecs, tvecs, model):
     """Reprojection RMS [px] for each view, sorted descending (worst first)."""
     errs = []
     for op, ip, rv, tv in zip(obj_pts, img_pts, rvecs, tvecs):
-        proj, _ = cv2.projectPoints(op, rv, tv, K, dist)
-        proj = proj.reshape(-1, 2)
+        proj = camera_model.project_points(op, rv, tv, K, dist, model)
         d = ip.reshape(-1, 2) - proj
         errs.append(float(np.sqrt(np.mean(np.sum(d * d, axis=1)))))
     return sorted(errs, reverse=True)
@@ -148,5 +154,5 @@ def K_from_intrinsics(intr):
 
 
 def dist_array(distortion):
-    """[k1, k2, p1, p2] -> (4,) float array for OpenCV."""
+    """4 distortion floats (radtan or equi) -> (4,) float array for OpenCV."""
     return np.asarray(distortion, dtype=np.float64).reshape(-1)[:4]

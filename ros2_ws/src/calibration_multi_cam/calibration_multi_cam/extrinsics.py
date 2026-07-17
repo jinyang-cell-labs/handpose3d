@@ -13,17 +13,30 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from calibration_multi_cam import se3
+from calibration_multi_cam import camera_model, se3
 from calibration_multi_cam.intrinsics import K_from_intrinsics, dist_array
 
 
-def estimate_target_pose(object_points_all, pids, pixels, K, dist):
-    """solvePnP for a planar target -> T_cam_target, or None on failure."""
+def estimate_target_pose(object_points_all, pids, pixels, K, dist,
+                         model=camera_model.RADTAN):
+    """solvePnP for a planar target -> T_cam_target, or None on failure.
+
+    cv2.solvePnP only understands the radtan model, so for other models the
+    pixels are first undistorted to ideal normalized coordinates and PnP runs
+    with an identity camera matrix.
+    """
     pids = np.asarray(pids).reshape(-1)
     if pids.size < 4:
         return None
     objp = object_points_all[pids].astype(np.float64)
     imgp = np.asarray(pixels, dtype=np.float64).reshape(-1, 2)
+    if model != camera_model.RADTAN:
+        try:
+            imgp = camera_model.undistort_to_normalized(imgp, K, dist, model)
+        except cv2.error:
+            return None
+        K = np.eye(3)
+        dist = None
     rvec = tvec = None
     ok = False
     try:
@@ -72,7 +85,7 @@ def init_extrinsics(views, camera_names, intrinsics_by_name, object_points_all,
     ----------
     views : list of dict {camera_name: (point_ids, image_points)}
     camera_names : list[str]   (camera_names[0] is the world camera)
-    intrinsics_by_name : dict camera_name -> {"intrinsics": [...], "distortion": [...]}
+    intrinsics_by_name : dict camera_name -> {"model", "intrinsics", "distortion"}
     object_points_all : (N, 3) target corners
 
     Returns
@@ -86,6 +99,7 @@ def init_extrinsics(views, camera_names, intrinsics_by_name, object_points_all,
     C = len(camera_names)
     Ks = [K_from_intrinsics(intrinsics_by_name[n]["intrinsics"]) for n in camera_names]
     Ds = [dist_array(intrinsics_by_name[n]["distortion"]) for n in camera_names]
+    Ms = [camera_model.model_of(intrinsics_by_name[n]) for n in camera_names]
 
     rel_samples = {}      # (i, j) i<j -> list of T_j_i  (maps i -> j)
     pair_views = {}       # (i, j) i<j -> count
@@ -102,7 +116,8 @@ def init_extrinsics(views, camera_names, intrinsics_by_name, object_points_all,
             pixels = np.asarray(pixels, dtype=np.float64).reshape(-1, 2)
             if pids.size < min_corners:
                 continue
-            T = estimate_target_pose(object_points_all, pids, pixels, Ks[c], Ds[c])
+            T = estimate_target_pose(object_points_all, pids, pixels,
+                                     Ks[c], Ds[c], Ms[c])
             if T is None:
                 continue
             cam_T[c] = T

@@ -17,7 +17,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.sparse import csr_matrix, lil_matrix
 
-from calibration_multi_cam import se3
+from calibration_multi_cam import camera_model, se3
 from calibration_multi_cam.intrinsics import K_from_intrinsics, dist_array
 
 
@@ -29,6 +29,7 @@ def bundle_adjust(cam_world, board_world, obs_struct, camera_names,
     V = len(board_world)
     Ks = [K_from_intrinsics(intrinsics_by_name[n]["intrinsics"]) for n in camera_names]
     Ds = [dist_array(intrinsics_by_name[n]["distortion"]) for n in camera_names]
+    Ms = [camera_model.model_of(intrinsics_by_name[n]) for n in camera_names]
     n_cam_params = (C - 1) * 6
     n_params = n_cam_params + V * 6
 
@@ -72,9 +73,8 @@ def bundle_adjust(cam_world, board_world, obs_struct, camera_names,
         for (c, v, objp, pix) in blocks:
             T_cam_target = cams[c] @ boards[v]   # (world->cam) @ (target->world)
             rvec, tvec = se3.T_to_rt(T_cam_target)
-            proj, _ = cv2.projectPoints(objp, rvec.reshape(3, 1), tvec.reshape(3, 1),
-                                        Ks[c], Ds[c])
-            r = (proj.reshape(-1, 2) - pix).reshape(-1)
+            proj = camera_model.project_points(objp, rvec, tvec, Ks[c], Ds[c], Ms[c])
+            r = (proj - pix).reshape(-1)
             out[k:k + r.size] = r
             k += r.size
         return out
@@ -82,9 +82,10 @@ def bundle_adjust(cam_world, board_world, obs_struct, camera_names,
     def jacobian(x):
         # Analytic sparse Jacobian. For each (cam c, view v) block the residual
         # depends only on camera c's 6 params and view v's 6 params. The corner
-        # projection's sensitivity to the *composed* pose T_cam_target comes from
-        # cv2.projectPoints (first 6 jacobian columns = d/d[rvec,tvec]); the
-        # composed pose's sensitivity to the cam and board poses comes from
+        # projection's sensitivity to the *composed* pose T_cam_target comes
+        # from the model's projectPoints jacobian (camera_model hides the
+        # differing radtan/equi column layouts); the composed pose's
+        # sensitivity to the cam and board poses comes from
         # cv2.composeRT (T_cam_target = T_cam_world @ T_world_target, so
         # composeRT(board, cam) gives T3 = T2@T1). Chain-rule the two.
         J = lil_matrix((total_res, n_params))
@@ -104,8 +105,8 @@ def bundle_adjust(cam_world, board_world, obs_struct, camera_names,
             # input1 = board (T_world_target), input2 = cam (T_cam_world)
             (rct, tct, dr3dr1, dr3dt1, dr3dr2, dr3dt2,
              dt3dr1, dt3dt1, dt3dr2, dt3dt2) = cv2.composeRT(rv, tv, rc, tc)
-            _proj, Jp = cv2.projectPoints(objp, rct, tct, Ks[c], Ds[c])
-            Jrt = Jp[:, 0:6]                              # d(proj)/d(rct, tct)
+            _proj, Jrt = camera_model.project_points_jac(
+                objp, rct, tct, Ks[c], Ds[c], Ms[c])      # d(proj)/d(rct, tct)
             # d(rct, tct)/d(board params) and /d(cam params), each 6x6
             Jcb = np.block([[dr3dr1, dr3dt1], [dt3dr1, dt3dt1]])
             J[k:k + m, base:base + 6] = Jrt @ Jcb
@@ -142,6 +143,7 @@ def per_camera_rms(cam_world, board_world, obs_struct, camera_names,
     """Reprojection RMS [px] per camera, for the final report."""
     Ks = [K_from_intrinsics(intrinsics_by_name[n]["intrinsics"]) for n in camera_names]
     Ds = [dist_array(intrinsics_by_name[n]["distortion"]) for n in camera_names]
+    Ms = [camera_model.model_of(intrinsics_by_name[n]) for n in camera_names]
     acc = {n: [] for n in camera_names}
     for v, entries in enumerate(obs_struct):
         for (c, pids, pixels) in entries:
@@ -149,9 +151,8 @@ def per_camera_rms(cam_world, board_world, obs_struct, camera_names,
             pix = np.asarray(pixels, dtype=np.float64).reshape(-1, 2)
             T_cam_target = cam_world[c] @ board_world[v]
             rvec, tvec = se3.T_to_rt(T_cam_target)
-            proj, _ = cv2.projectPoints(objp, rvec.reshape(3, 1), tvec.reshape(3, 1),
-                                        Ks[c], Ds[c])
-            acc[camera_names[c]].append((proj.reshape(-1, 2) - pix).reshape(-1))
+            proj = camera_model.project_points(objp, rvec, tvec, Ks[c], Ds[c], Ms[c])
+            acc[camera_names[c]].append((proj - pix).reshape(-1))
     out = {}
     for n, errs in acc.items():
         if errs:

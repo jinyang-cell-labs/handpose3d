@@ -27,6 +27,15 @@
     camera1.topic: "/camera1/image_raw"
     #camera2.topic: "/camera2/image_raw"
 
+    # Per-camera projection model (intrinsic stage; stored in intrinsics_file
+    # and picked up from there by the extrinsic/publisher/board_pose stages):
+    #   "pinhole-radtan"  4-param [k1,k2,p1,p2], normal lenses (< ~100 deg FOV)
+    #   "pinhole-equi"    4-param equidistant fisheye [k1,k2,k3,k4], wide FOV
+    # Models can be mixed freely within one rig.
+    camera0.model: "pinhole-equi"
+    camera1.model: "pinhole-equi"
+    #camera2.model: "pinhole-equi"
+
     # ---- calibration target (ethz-asl/kalibr AprilGrid convention) --------
     target.type: "aprilgrid"
     target.family: "36h11"

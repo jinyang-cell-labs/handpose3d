@@ -28,6 +28,25 @@ ros2 service call /calibration_extrinsic/calibrate std_srvs/srv/Trigger {}     #
 ros2 launch calibration_multi_cam publish.launch.py
 ```
 
+## Camera models
+
+Each camera picks its projection model in `config/calibration.yaml`
+(`<camera>.model`, read by the intrinsic stage and stored in `intrinsics.yaml`;
+every later stage takes the model from there):
+
+| model | distortion | use for |
+|---|---|---|
+| `pinhole-radtan` (default) | `[k1, k2, p1, p2]` (`cv2.calibrateCamera`, `CALIB_FIX_K3`) | normal lenses, < ~100° FOV |
+| `pinhole-equi` | `[k1, k2, k3, k4]` equidistant (`cv2.fisheye.calibrate`) | wide-FOV / fisheye lenses (~100–180°) |
+
+These mirror kalibr's models of the same names. Models can be mixed within one
+rig (e.g. a 70° radtan camera + a 140° equi fisheye); PnP init and the bundle
+adjustment dispatch per camera through `camera_model.py`. For `pinhole-equi`
+the published `CameraInfo.distortion_model` is `equidistant` instead of
+`plumb_bob`. When calibrating a fisheye, cover the *whole* FOV — including the
+edges — with board views; center-only coverage leaves the distortion tail
+unconstrained.
+
 ## Board pose tracker (single camera)
 
 A standalone visualization/debugging aid: pick **one** camera, detect the board
@@ -103,8 +122,9 @@ information-gain view selection, and it also bounds the bundle-adjustment cost.
 ```yaml
 # intrinsics.yaml  (stage 1 -> stage 2 + publisher)
 cameras:
-  camera0: {model: pinhole-radtan, resolution: [w,h],
+  camera0: {model: pinhole-radtan, resolution: [w,h],   # or pinhole-equi
          intrinsics: [fx,fy,cx,cy], distortion: [k1,k2,p1,p2], reproj_rms: 0.21, num_views: 28}
+         # distortion is [k1,k2,p1,p2] for pinhole-radtan, [k1,k2,k3,k4] for pinhole-equi
 ```
 ```yaml
 # extrinsics.yaml  (stage 2 -> publisher)
@@ -122,7 +142,8 @@ cameras:
 | `view_buffer.py` | keep-most-informative retention (maximin diversity thinning) |
 | `observations.py` | synchronized-view database (bounded, diverse) |
 | `se3.py` | SE(3) helpers (Rodrigues, compose, robust average) |
-| `intrinsics.py` | per-camera `cv2.calibrateCamera` (4-param radtan) |
+| `camera_model.py` | pinhole-radtan / pinhole-equi projection, jacobians, undistortion, calibration dispatch |
+| `intrinsics.py` | per-camera intrinsic calibration (radtan or equi, robust outlier rejection) |
 | `extrinsics.py` | per-view PnP + pairwise relative pose + spanning-tree chaining to camera0 |
 | `bundle_adjust.py` | global reprojection BA (scipy `least_squares`, Huber, intrinsics fixed) |
 | `intrinsic_calibrator_node.py` | stage 1 node |

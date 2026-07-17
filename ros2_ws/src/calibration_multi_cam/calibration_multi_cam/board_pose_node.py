@@ -38,7 +38,7 @@ from sensor_msgs.msg import Image
 from std_srvs.srv import Trigger
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
-from calibration_multi_cam import se3
+from calibration_multi_cam import camera_model, se3
 from calibration_multi_cam.extrinsics import estimate_target_pose
 from calibration_multi_cam.intrinsics import K_from_intrinsics, dist_array
 from calibration_multi_cam.publisher_node import _mat_to_quat
@@ -100,6 +100,7 @@ class BoardPoseNode(Node):
         self.bridge = CvBridge()
         self.K = None
         self.dist = None
+        self.model = camera_model.RADTAN
 
         self.tf_broadcaster = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
@@ -209,7 +210,10 @@ class BoardPoseNode(Node):
                 return False
             self.K = K_from_intrinsics(cam["intrinsics"])
             self.dist = dist_array(cam.get("distortion", []))
-            self.get_logger().info(f"Loaded intrinsics for {self.camera}.")
+            self.model = camera_model.model_of(cam)
+            self.get_logger().info(
+                f"Loaded intrinsics for {self.camera} ({self.model})."
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f"Failed to read intrinsics: {exc}")
@@ -237,10 +241,10 @@ class BoardPoseNode(Node):
             cv2.circle(img, (int(round(p[0])), int(round(p[1]))), 3, (0, 255, 0), -1)
 
         if pids.size >= self.min_corners:
-            T = estimate_target_pose(self.target.object_points, pids, pts, self.K, self.dist)
+            T = estimate_target_pose(self.target.object_points, pids, pts,
+                                     self.K, self.dist, self.model)
             if T is not None:
-                rvec, tvec = se3.T_to_rt(T)
-                cv2.drawFrameAxes(img, self.K, self.dist, rvec, tvec, self.axis_length, 3)
+                self._draw_axes(img, T)
                 self._broadcast_tf(T, msg.header.stamp)
                 self._last_pose_ok = True
                 self._last_T = T
@@ -249,6 +253,20 @@ class BoardPoseNode(Node):
         out.header.stamp = msg.header.stamp
         out.header.frame_id = self.camera
         self.image_pub.publish(out)
+
+    def _draw_axes(self, img, T_cam_target):
+        """Board axes overlay (x red, y green, z blue, like drawFrameAxes).
+
+        Projected through camera_model so it is correct for both radtan and
+        equi cameras (cv2.drawFrameAxes only understands radtan distortion).
+        """
+        rvec, tvec = se3.T_to_rt(T_cam_target)
+        L = self.axis_length
+        ends = np.array([[0, 0, 0], [L, 0, 0], [0, L, 0], [0, 0, L]], dtype=np.float64)
+        p = camera_model.project_points(ends, rvec, tvec, self.K, self.dist, self.model)
+        o = (int(round(p[0, 0])), int(round(p[0, 1])))
+        for end, color in zip(p[1:], ((0, 0, 255), (0, 255, 0), (255, 0, 0))):
+            cv2.line(img, o, (int(round(end[0])), int(round(end[1]))), color, 3)
 
     def _broadcast_tf(self, T_cam_target, stamp):
         tf = self._make_tf(
