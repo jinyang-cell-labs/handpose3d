@@ -1,4 +1,8 @@
 PyQt5>=5.15
-opencv-python-headless>=4.8
+# <5 to match the calibration_multi_cam solver (validated on OpenCV 4.x / ROS 2
+# Jazzy). OpenCV 5.0 relocated cv2.fisheye.CALIB_* flags and breaks the fisheye
+# path. Also needs contrib for cv2.aruco (AprilGrid detection).
+opencv-contrib-python-headless>=4.8,<5
 numpy>=1.24
 PyYAML>=6.0
+scipy>=1.11

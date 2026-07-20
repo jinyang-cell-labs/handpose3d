@@ -39,6 +39,7 @@ from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -48,12 +49,18 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSlider,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from calibrator import MODELS, CalibrationWorker, merged_calibration_config
 
 DEFAULT_CONFIG = {
     "cameras": [0, 2, 4, 6],
@@ -266,6 +273,10 @@ class RecordWorker(QThread):
             yaml.safe_dump(
                 {
                     "cameras": labels,
+                    # device each camera was opened from (by-id paths are
+                    # stable identities across replug/renumbering)
+                    "devices": {w.label: str(w.device) for w in self._workers
+                                if w.label in writers},
                     "width": self._cfg["width"],
                     "height": self._cfg["height"],
                     "fps": fps,
@@ -754,6 +765,231 @@ class PlaybackTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Calibrate tab
+# ---------------------------------------------------------------------------
+class CalibrateTab(QWidget):
+    """Offline rig calibration from a recorded session.
+
+    Assign each camera of the selected session to a rig (fixed / head-mounted),
+    pick each rig's reference camera (its 0,0,0), then run: intrinsics per
+    camera first, then per-rig extrinsics. Progress, detection previews and the
+    solver log are shown live; results land in <session>/calibration/.
+    """
+
+    EXCLUDE = "(exclude)"
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+        self.calib_cfg = merged_calibration_config(cfg.get("calibration"))
+        self.rig_names = list(self.calib_cfg["rigs"].keys())
+        self.worker = None
+        self._build_ui()
+        self.refresh_sessions()
+
+    def _build_ui(self):
+        root = QHBoxLayout(self)
+
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Recorded sessions"))
+        self.session_list = QListWidget()
+        self.session_list.itemSelectionChanged.connect(self._load_selected)
+        left.addWidget(self.session_list, stretch=1)
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self.refresh_sessions)
+        left.addWidget(refresh)
+        left_box = QWidget()
+        left_box.setLayout(left)
+        left_box.setMaximumWidth(280)
+        root.addWidget(left_box)
+
+        right = QVBoxLayout()
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(
+            ["Camera", "Rig", "Model", "Reference (0,0,0)"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setMaximumHeight(180)
+        right.addWidget(self.table)
+
+        self.run_btn = QPushButton("Run calibration")
+        self.run_btn.setMinimumHeight(40)
+        self.run_btn.setEnabled(False)
+        self.run_btn.clicked.connect(self._toggle_run)
+        right.addWidget(self.run_btn)
+
+        self.stage_label = QLabel("select a session")
+        self.stage_label.setStyleSheet("font-weight: bold;")
+        right.addWidget(self.stage_label)
+        self.progress = QProgressBar()
+        self.progress.setValue(0)
+        right.addWidget(self.progress)
+
+        self.preview = QLabel("detection preview")
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumHeight(200)
+        self.preview.setStyleSheet("background:#111; color:#888;")
+        right.addWidget(self.preview, stretch=1)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(500)
+        self.log_view.setMinimumHeight(120)
+        right.addWidget(self.log_view)
+        root.addLayout(right, stretch=1)
+
+    # ---- sessions ---------------------------------------------------------
+    def refresh_sessions(self):
+        self.session_list.clear()
+        base = self.cfg["output_dir"]
+        if not os.path.isdir(base):
+            return
+        for name in sorted(os.listdir(base), reverse=True):
+            path = os.path.join(base, name)
+            if os.path.isdir(path) and any(
+                f.startswith("cam_") for f in os.listdir(path)
+            ):
+                self.session_list.addItem(name)
+
+    def _session_dir(self):
+        items = self.session_list.selectedItems()
+        if not items:
+            return None
+        return os.path.join(self.cfg["output_dir"], items[0].text())
+
+    def _load_selected(self):
+        session_dir = self._session_dir()
+        if not session_dir or self.worker:
+            return
+        cameras = []
+        meta_path = os.path.join(session_dir, "meta.yaml")
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                cameras = (yaml.safe_load(f) or {}).get("cameras", [])
+        if not cameras:
+            cameras = sorted(
+                os.path.splitext(f)[0][len("cam_"):]
+                for f in os.listdir(session_dir)
+                if f.startswith("cam_") and not f.endswith((".yaml", ".csv"))
+            )
+
+        rig_cfg = self.calib_cfg["rigs"]
+        self.table.setRowCount(len(cameras))
+        for row, label in enumerate(cameras):
+            item = QTableWidgetItem(label)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, item)
+
+            rig_combo = QComboBox()
+            rig_combo.addItems(self.rig_names + [self.EXCLUDE])
+            default_rig = self.calib_cfg["default_rig"]
+            for rig, spec in rig_cfg.items():
+                if label in (spec.get("cameras") or []):
+                    default_rig = rig
+            rig_combo.setCurrentText(default_rig)
+            self.table.setCellWidget(row, 1, rig_combo)
+
+            model_combo = QComboBox()
+            model_combo.addItems(MODELS)
+            model_combo.setCurrentText(
+                self.calib_cfg["models"].get(label,
+                                             self.calib_cfg["default_model"]))
+            self.table.setCellWidget(row, 2, model_combo)
+
+            ref_check = QCheckBox()
+            ref_check.setChecked(
+                label == (rig_cfg.get(default_rig, {}) or {}).get("reference"))
+            self.table.setCellWidget(row, 3, ref_check)
+
+        self.run_btn.setEnabled(True)
+        self.stage_label.setText(f"ready: {os.path.basename(session_dir)}")
+
+    def _table_assignments(self):
+        """-> (rig_of, reference_of, model_of) from the current table state."""
+        rig_of, model_of, refs = {}, {}, {}
+        for row in range(self.table.rowCount()):
+            label = self.table.item(row, 0).text()
+            rig = self.table.cellWidget(row, 1).currentText()
+            if rig == self.EXCLUDE:
+                continue
+            rig_of[label] = rig
+            model_of[label] = self.table.cellWidget(row, 2).currentText()
+            if self.table.cellWidget(row, 3).isChecked():
+                refs.setdefault(rig, []).append(label)
+
+        reference_of = {}
+        for rig in set(rig_of.values()):
+            chosen = refs.get(rig, [])
+            if len(chosen) > 1:
+                raise ValueError(
+                    f"rig '{rig}' has {len(chosen)} reference cameras "
+                    f"({chosen}) — check exactly one")
+            members = [l for l, r in rig_of.items() if r == rig]
+            reference_of[rig] = chosen[0] if chosen else members[0]
+        return rig_of, reference_of, model_of
+
+    # ---- run ----------------------------------------------------------------
+    def _toggle_run(self):
+        if self.worker:
+            self.worker.stop()
+            self.run_btn.setEnabled(False)
+            return
+        session_dir = self._session_dir()
+        if not session_dir:
+            return
+        try:
+            rig_of, reference_of, model_of = self._table_assignments()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Rig setup", str(exc))
+            return
+        if not rig_of:
+            QMessageBox.warning(self, "Rig setup", "All cameras are excluded.")
+            return
+
+        self.log_view.clear()
+        self.worker = CalibrationWorker(
+            session_dir, rig_of, reference_of, model_of, self.calib_cfg)
+        self.worker.stage.connect(self._on_stage)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.log.connect(self.log_view.appendPlainText)
+        self.worker.preview.connect(self._on_preview)
+        self.worker.done.connect(self._on_done)
+        self.worker.start()
+        self.run_btn.setText("Abort calibration")
+        self.session_list.setEnabled(False)
+        self.table.setEnabled(False)
+
+    def _on_stage(self, title):
+        self.stage_label.setText(title)
+        self.progress.setValue(0)
+
+    def _on_progress(self, done, total):
+        self.progress.setMaximum(max(1, total))
+        self.progress.setValue(done)
+
+    def _on_preview(self, qimg):
+        self.preview.setPixmap(QPixmap.fromImage(qimg).scaled(
+            self.preview.size(), Qt.KeepAspectRatio, Qt.FastTransformation))
+
+    def _on_done(self, ok, message):
+        self.worker = None
+        self.run_btn.setText("Run calibration")
+        self.run_btn.setEnabled(True)
+        self.session_list.setEnabled(True)
+        self.table.setEnabled(True)
+        self.stage_label.setText("done ✓" if ok else "failed ✗")
+        self.log_view.appendPlainText(message)
+        if not ok:
+            QMessageBox.warning(self, "Calibration failed",
+                                message.splitlines()[-1] if message else "error")
+
+    def shutdown(self):
+        if self.worker:
+            self.worker.stop()
+            self.worker.wait(5000)
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 class MainWindow(QWidget):
@@ -764,14 +1000,18 @@ class MainWindow(QWidget):
         tabs = QTabWidget()
         self.record_tab = RecordTab(cfg)
         self.playback_tab = PlaybackTab(cfg)
+        self.calibrate_tab = CalibrateTab(cfg)
         self.record_tab.session_saved.connect(self.playback_tab.refresh_sessions)
+        self.record_tab.session_saved.connect(self.calibrate_tab.refresh_sessions)
         tabs.addTab(self.record_tab, "Record")
         tabs.addTab(self.playback_tab, "Playback")
+        tabs.addTab(self.calibrate_tab, "Calibrate")
         root.addWidget(tabs)
 
     def closeEvent(self, event):
         self.record_tab.shutdown()
         self.playback_tab.shutdown()
+        self.calibrate_tab.shutdown()
         event.accept()
 
 

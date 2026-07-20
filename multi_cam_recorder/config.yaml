@@ -36,3 +36,52 @@ output_dir: ~/recordings/multi_cam
 preview_fps: 20
 # Grid columns for the preview layout (4 cameras -> 2x2).
 grid_columns: 2
+
+# ---- calibration (Calibrate tab) -------------------------------------------
+# Reuses the solver of ros2_ws/src/calibration_multi_cam on recorded sessions.
+# Everything here is a GUI *default* — rig assignment, reference camera and
+# camera model are editable per session in the Calibrate tab.
+calibration:
+  # Rig groups: cameras rigidly mounted together. Extrinsics are solved per
+  # rig (the pose BETWEEN rigs is dynamic and never solved). `reference` is
+  # the camera whose frame is the rig's origin (0,0,0).
+  rigs:
+    fixed:
+      cameras: [video0, video2]
+      reference: video0
+    head:
+      cameras: []          # head-mounted cameras (fill in when both exist)
+      reference: null      # null = first camera of the rig
+  default_rig: head        # cameras not listed above default to this rig
+  # Projection model per camera: pinhole-radtan (normal lens) or pinhole-equi
+  # (wide-FOV fisheye, e.g. the Arducam OV9782).
+  models:
+    video0: pinhole-radtan
+    video2: pinhole-radtan
+  default_model: pinhole-equi
+  # AprilGrid target (kalibr convention) — must match the printed board!
+  target:
+    type: aprilgrid
+    family: 36h11
+    tag_rows: 6
+    tag_cols: 6
+    tag_size: 0.03         # tag edge length [m] (measure it!)
+    tag_spacing: 0.333     # inter-tag gap / tag_size
+    border_bits: 2
+  # Collection: process every Nth recorded frame; keep views with >= min_corners
+  # detected that moved >= novelty px since the last kept view.
+  frame_step: 1
+  min_corners: 8
+  novelty_min_pixel_motion: 12.0
+  min_views_per_camera: 20   # required per camera for intrinsics
+  max_views_per_camera: 80   # keep-most-informative cap (0 = unlimited)
+  min_views_extrinsic: 30    # required synchronized views per rig
+  max_views_extrinsic: 150
+  # A rig view is used only if every rig camera has a FRESH frame (not a
+  # duplicate from a slow camera) captured within this window [s].
+  sync_max_skew: 0.015
+  robust_loss: huber         # bundle adjustment loss: huber|cauchy|soft_l1|linear
+  robust_loss_scale: 1.0     # [px]
+  # Path to the calibration_multi_cam package (solver library).
+  # null = ../ros2_ws/src/calibration_multi_cam relative to this tool.
+  solver_path: null

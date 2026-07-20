@@ -56,3 +56,58 @@ current frame of *every* camera to that camera's file. Therefore:
 The **Playback** tab lists all sessions in `output_dir`. Selecting one opens
 every video of the session and plays them frame-locked (all views always show
 the same tick), with play/pause and a seek slider.
+
+## Calibrate
+
+The **Calibrate** tab runs multi-camera calibration on a recorded session,
+reusing the solver of `ros2_ws/src/calibration_multi_cam` (AprilGrid detection,
+per-camera intrinsics, PnP + spanning-tree extrinsics, bundle adjustment) with
+the ROS collection layer replaced by a reader for recorder sessions.
+
+**Rigs.** Cameras are grouped into rigs — sets rigidly mounted together (e.g. a
+fixed table pair and a head-mounted pair). Extrinsics are solved *independently
+per rig*, because the pose between rigs is dynamic; the relative pose between
+rigs is never estimated. Each rig has a **reference camera** whose frame is its
+origin (0,0,0). Assign rig, projection model and reference per camera in the
+tab (defaults come from `calibration:` in config.yaml).
+
+**Workflow.** Hold the AprilGrid so it is visible to the cameras and record one
+take (a single session covers both stages). Then in Calibrate: pick the
+session, confirm the rig table, press **Run**. The stage label + progress bar
+and the live detection preview show which stage is running (extract →
+intrinsics → per-rig extrinsics → write); the log shows RMS and coverage.
+
+**Synchronization.** Uses `timestamps.csv`: a rig view is kept only when every
+rig camera has a *fresh* frame (not a slow camera's duplicate) with capture-time
+skew below `sync_max_skew`. This matters for the moving head rig, where pairing
+a fresh frame with a stale one injects pose error.
+
+**Outputs** → `<session>/calibration/`:
+
+```yaml
+# intrinsics.yaml
+cameras:
+  video0: {model: pinhole-radtan, resolution: [1280,720],
+           intrinsics: [fx,fy,cx,cy], distortion: [k1,k2,p1,p2],
+           reproj_rms: 1.3, num_views: 48}
+```
+```yaml
+# extrinsics.yaml — per rig, reference camera is identity
+rigs:
+  head:
+    reference: video5
+    cameras:
+      video5: {T_ref_cam: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}
+      video8: {T_ref_cam: [[...]]}   # pose of video8 in video5's frame
+```
+`report.yaml` records views, coverage and per-camera/per-rig RMS.
+
+**Requirements.** Needs `cv2.aruco` (opencv-contrib) and `scipy`, both in
+requirements.txt. OpenCV is pinned `<5`: the solver targets OpenCV 4.x (ROS 2
+Jazzy), and 5.0 relocated the `cv2.fisheye.CALIB_*` flags.
+
+**Coverage matters.** Intrinsics need the board across the *whole* frame,
+especially the edges for fisheye (`pinhole-equi`) lenses — the tab warns when a
+camera's board coverage is below 50%. Extrinsics need many views where *both*
+rig cameras see the board together; if a rig reports too few synchronized
+views, record a take aiming the board so both its cameras see it at once.
