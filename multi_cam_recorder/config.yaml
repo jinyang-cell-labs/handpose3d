@@ -37,6 +37,16 @@ preview_fps: 20
 # Grid columns for the preview layout (4 cameras -> 2x2).
 grid_columns: 2
 
+# ---- phone pose (Record tab, ARCore) ---------------------------------------
+# The phone is rigidly mounted to the head camera set; its 6DoF ARCore pose is
+# recorded together with the cameras (Record button starts/stops both) into
+# <session>/phone_pose.jsonl for use as a calibration reference. Uses the
+# phone_tracker client; these values prefill the Record-tab panel.
+phone:
+  ip: 192.168.0.110   # phone IP on the same WiFi (the app listens on UDP 9869)
+  pose_port: 9870     # UDP port the phone streams poses back to
+  enabled: true       # default state of the "Record with cameras" checkbox
+
 # ---- calibration (Calibrate tab) -------------------------------------------
 # Reuses the solver of ros2_ws/src/calibration_multi_cam on recorded sessions.
 # Everything here is a GUI *default* — rig assignment, reference camera and

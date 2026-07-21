@@ -61,6 +61,7 @@ from PyQt5.QtWidgets import (
 )
 
 from calibrator import MODELS, CalibrationWorker, merged_calibration_config
+from phone_panel import PhonePanel
 
 DEFAULT_CONFIG = {
     "cameras": [0, 2, 4, 6],
@@ -398,6 +399,11 @@ class RecordTab(QWidget):
         out_row.addWidget(browse)
         root.addLayout(out_row)
 
+        # Phone pose (ARCore) — recorded into the same session folder, started
+        # and stopped together with the cameras by the Record button below.
+        self.phone = PhonePanel(self.cfg)
+        root.addWidget(self.phone)
+
         btn_row = QHBoxLayout()
         self.record_btn = QPushButton("Start recording")
         self.record_btn.setMinimumHeight(40)
@@ -545,6 +551,7 @@ class RecordTab(QWidget):
     def _toggle_record(self):
         if self.recorder:
             self.recorder.stop()
+            self.phone.end_recording()
             self.record_btn.setEnabled(False)
             return
 
@@ -561,6 +568,10 @@ class RecordTab(QWidget):
         self.recorder.finished_session.connect(self._on_record_finished)
         self.recorder.error.connect(self._on_record_error)
         self.recorder.start()
+        # Log the phone pose into the same session folder (no-op if the phone
+        # is not connected or 'Record with cameras' is unchecked).
+        self.phone.begin_recording(session_dir)
+        self.phone.set_locked(True)
         self.record_btn.setText("Stop recording")
         self.record_btn.setStyleSheet("background:#b00; color:white;")
         self.rescan_btn.setEnabled(False)
@@ -577,7 +588,13 @@ class RecordTab(QWidget):
         self._reset_record_ui()
 
     def _reset_record_ui(self):
+        # finished_session is emitted from run()'s finally, so the QThread may
+        # not have fully exited yet; wait before dropping the last reference,
+        # or Python GC destroys a still-running QThread and aborts.
+        if self.recorder:
+            self.recorder.wait(3000)
         self.recorder = None
+        self.phone.set_locked(False)
         self.record_btn.setText("Start recording")
         self.record_btn.setStyleSheet("")
         self.record_btn.setEnabled(True)
@@ -590,6 +607,7 @@ class RecordTab(QWidget):
             self.recorder.stop()
             self.recorder.wait(3000)
         self._close_cameras()
+        self.phone.shutdown()
 
 
 # ---------------------------------------------------------------------------

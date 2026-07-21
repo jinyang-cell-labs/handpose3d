@@ -24,6 +24,9 @@ The script bootstraps a local `.venv` and installs dependencies on first run.
 | `output_dir` | `~/recordings/multi_cam` | where sessions are stored |
 | `preview_fps` | `20` | GUI preview refresh rate |
 | `grid_columns` | `2` | preview grid layout |
+| `phone.ip` | `192.168.0.110` | phone IP prefilled in the Record tab (see [Phone pose](#phone-pose)) |
+| `phone.pose_port` | `9870` | UDP port the phone streams ARCore poses back to |
+| `phone.enabled` | `true` | default state of the "Record with cameras" checkbox |
 
 ## How synchronization works
 
@@ -49,6 +52,7 @@ current frame of *every* camera to that camera's file. Therefore:
     cam_video6.avi
     meta.yaml         # cameras, resolution, fps, start time
     timestamps.csv    # tick_idx, tick_time, per-camera seq + capture time
+    phone_pose.jsonl  # phone ARCore pose stream (only if a phone was recorded)
 ```
 
 ## Playback
@@ -56,6 +60,43 @@ current frame of *every* camera to that camera's file. Therefore:
 The **Playback** tab lists all sessions in `output_dir`. Selecting one opens
 every video of the session and plays them frame-locked (all views always show
 the same tick), with play/pause and a seek slider.
+
+## Phone pose
+
+The phone is rigidly mounted to the head-mounted camera set, so its 6DoF pose
+is a useful reference for calibrating the rig. The **Phone pose (ARCore)** panel
+in the Record tab drives the phone app over WiFi (the same protocol as the
+`phone_tracker/` reference tool, reused directly — see its README for the app,
+packet format and clock-sync details):
+
+- **Connect + sync** — open the control channel to the phone (UDP :9869) and
+  run an NTP-style clock handshake so pose timestamps map onto the laptop clock.
+  The IP/port are prefilled from the `phone:` section of `config.yaml`.
+- **Start pose** — start/stop a live pose stream for preview (state, rate,
+  position, calibration counter and waypoint count are shown live).
+- **Calibrate / Waypoint / Clear** — remote-trigger the app's reference-pose
+  anchor and accuracy waypoints (these ride on the pose stream).
+
+**Recording is joined to the cameras.** With "Record with cameras" checked and
+the phone connected, the main **Start/Stop recording** button starts and stops
+the phone pose log together with the camera videos, writing
+`<session>/phone_pose.jsonl` — one `pose` record per frame plus `start`/`end`
+clock-sync records (with measured drift), the exact format
+`phone_tracker/record_streams.py` produces:
+
+```json
+{"type":"sync","when":"start","offset_ns":...,"streams":["pose"],...}
+{"type":"pose","t_laptop":...,"t_phone":...,"t_recv":...,"px":...,"calib":N,...}
+{"type":"sync","when":"end","offset_ns":...,"drift_ppm":...,...}
+```
+
+`t_laptop = t_phone − offset_ns` is the pose's phone timestamp mapped onto the
+laptop wall clock — the common time base with `timestamps.csv`, so poses can be
+aligned to camera frames offline. If the phone is not connected (or the
+checkbox is off) the cameras record on their own. The panel binds the pose UDP
+port itself, so stop any ROS2 pose bridge (or use a different port) while
+recording. Only the ARCore pose stream is recorded; the phone's IMU pipeline is
+not used by this tool.
 
 ## Calibrate
 
