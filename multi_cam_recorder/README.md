@@ -50,7 +50,7 @@ current frame of *every* camera to that camera's file. Therefore:
     cam_video2.avi
     cam_video4.avi
     cam_video6.avi
-    meta.yaml         # cameras, resolution, fps, start time
+    meta.yaml         # cameras, resolution, fps, start time, clock anchor
     timestamps.csv    # tick_idx, tick_time, per-camera seq + capture time
     phone_pose.jsonl  # phone ARCore pose stream (only if a phone was recorded)
 ```
@@ -90,13 +90,22 @@ clock-sync records (with measured drift), the exact format
 {"type":"sync","when":"end","offset_ns":...,"drift_ppm":...,...}
 ```
 
-`t_laptop = t_phone − offset_ns` is the pose's phone timestamp mapped onto the
-laptop wall clock — the common time base with `timestamps.csv`, so poses can be
-aligned to camera frames offline. If the phone is not connected (or the
-checkbox is off) the cameras record on their own. The panel binds the pose UDP
-port itself, so stop any ROS2 pose bridge (or use a different port) while
-recording. Only the ARCore pose stream is recorded; the phone's IMU pipeline is
-not used by this tool.
+`t_laptop = t_phone − offset_ns` maps each pose's phone timestamp onto the
+laptop **wall clock** (`time.time_ns`). Camera frame times in `timestamps.csv`
+use a *different* clock — `time.monotonic` — so to align poses with frames
+offline, convert with the `clock_anchor` recorded in `meta.yaml`:
+
+```
+wall_ns = monotonic_ns + (clock_anchor.wall_ns − clock_anchor.monotonic_ns)
+```
+
+i.e. map a frame's `*_capture_time` (monotonic seconds → ns) into wall ns and
+match it against the poses' `t_laptop`. For a moving rig, interpolate the two
+poses bracketing the frame time (SLERP on rotation) rather than taking the
+nearest sample. If the phone is not connected (or the checkbox is off) the
+cameras record on their own. The panel binds the pose UDP port itself, so stop
+any ROS2 pose bridge (or use a different port) while recording. Only the ARCore
+pose stream is recorded; the phone's IMU pipeline is not used by this tool.
 
 ## Calibrate
 

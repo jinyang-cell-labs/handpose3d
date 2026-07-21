@@ -14,7 +14,7 @@ Each recording session is a folder:
         cam_video0.avi
         cam_video2.avi
         ...
-        meta.yaml         # cameras, resolution, fps, start time
+        meta.yaml         # cameras, resolution, fps, start time, clock anchor
         timestamps.csv    # tick_idx, tick_time, per-camera seq + capture time
 
 The Playback tab lists sessions and replays all files of a session
@@ -270,6 +270,15 @@ class RecordWorker(QThread):
             return
 
         labels = list(writers.keys())
+        # Clock anchor bridging the two logs' time bases: camera frame times
+        # (timestamps.csv) are time.monotonic, phone poses (phone_pose.jsonl)
+        # are time.time_ns wall-clock — different epochs. Capturing both clocks
+        # back-to-back lets an offline consumer convert between them:
+        #   wall_ns = monotonic_ns + (clock_anchor.wall_ns - clock_anchor.monotonic_ns)
+        # Their relative drift over a session is sub-millisecond (well below the
+        # phone's own clock-sync uncertainty), so one anchor per session suffices.
+        anchor_mono_ns = time.monotonic_ns()
+        anchor_wall_ns = time.time_ns()
         with open(os.path.join(self._dir, "meta.yaml"), "w") as f:
             yaml.safe_dump(
                 {
@@ -283,6 +292,10 @@ class RecordWorker(QThread):
                     "fps": fps,
                     "record_fourcc": self._cfg["record_fourcc"],
                     "started": datetime.now().isoformat(timespec="seconds"),
+                    "clock_anchor": {
+                        "monotonic_ns": anchor_mono_ns,
+                        "wall_ns": anchor_wall_ns,
+                    },
                 },
                 f,
             )
