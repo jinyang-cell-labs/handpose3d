@@ -140,6 +140,7 @@ class PhonePanel(QGroupBox):
         self.ctrl = None
         self.phone_ip = None
         self.sync = None
+        self._screen_locked = False  # believed state of the phone's screen lock
 
         # -- data plane -----------------------------------------------------
         self.receiver = PoseReceiver(self._on_pose)
@@ -206,6 +207,13 @@ class PhonePanel(QGroupBox):
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.clicked.connect(lambda: self._cmd("clear_waypoints"))
         row2.addWidget(self.clear_btn)
+        self.lock_btn = QPushButton("Lock screen")
+        self.lock_btn.setToolTip(
+            "Disable the phone's on-screen controls so a stray touch can't "
+            "trigger anything while it is moved as a controller (the control "
+            "channel and streams keep running).")
+        self.lock_btn.clicked.connect(self._on_toggle_lock)
+        row2.addWidget(self.lock_btn)
         self.include_chk = QCheckBox("Record with cameras")
         self.include_chk.setChecked(bool(self.cfg.get("enabled", True)))
         row2.addWidget(self.include_chk)
@@ -310,6 +318,17 @@ class PhonePanel(QGroupBox):
             getattr(self.ctrl, name)()
             self.log_msg.emit(name.replace("_", " ") + " ok")
         self._submit(run)
+
+    def _on_toggle_lock(self):
+        self._submit(self._do_toggle_lock)
+
+    def _do_toggle_lock(self):
+        if not self.ctrl:
+            raise ControlError("connect to the phone first")
+        target = not self._screen_locked
+        (self.ctrl.lock if target else self.ctrl.unlock)()
+        self._screen_locked = target  # only flip after the ack succeeds
+        self.log_msg.emit("screen locked" if target else "screen unlocked")
 
     # -- recording (driven by the main Record button) -----------------------
     def begin_recording(self, session_dir):
@@ -464,6 +483,9 @@ class PhonePanel(QGroupBox):
         self.calib_btn.setEnabled(connected and not self._busy)
         self.wp_btn.setEnabled(connected and not self._busy)
         self.clear_btn.setEnabled(connected and not self._busy)
+        self.lock_btn.setText("Unlock screen" if self._screen_locked
+                              else "Lock screen")
+        self.lock_btn.setEnabled(connected and not self._busy)
         self.include_chk.setEnabled(not (recording or self._locked))
 
         if recording:

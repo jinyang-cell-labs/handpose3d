@@ -18,6 +18,7 @@ CLI usage:
     python3 phone_control.py <phone_ip> start-imu [--port 9871] [--rate 200]
     python3 phone_control.py <phone_ip> stop-imu
     python3 phone_control.py <phone_ip> calibrate | waypoint | clear-waypoints
+    python3 phone_control.py <phone_ip> lock | unlock
 """
 import argparse
 import json
@@ -78,6 +79,16 @@ class PhoneControl:
 
     def clear_waypoints(self):
         self._rpc({"cmd": "clear_waypoints"})
+
+    def lock(self):
+        """Disable the phone's on-screen controls so a stray touch can't
+        trigger anything while it is moved as a controller. The control channel
+        and both streams keep running regardless."""
+        self._rpc({"cmd": "lock"})
+
+    def unlock(self):
+        """Re-enable the phone's on-screen controls."""
+        self._rpc({"cmd": "unlock"})
 
     def _rpc(self, msg: dict, retries: int = 4) -> dict:
         """Send a command and wait for its ack; UDP, so retry on silence."""
@@ -148,7 +159,7 @@ def main():
     ap.add_argument("phone_ip")
     ap.add_argument("command",
                     choices=["sync", "start-pose", "stop-pose", "start-imu", "stop-imu",
-                             "calibrate", "waypoint", "clear-waypoints"])
+                             "calibrate", "waypoint", "clear-waypoints", "lock", "unlock"])
     ap.add_argument("--port", type=int, default=None,
                     help="stream target port (default 9870 pose / 9871 imu)")
     ap.add_argument("--rate", type=int, default=200, help="IMU rate in Hz")
@@ -185,6 +196,12 @@ def main():
         elif args.command == "clear-waypoints":
             ctrl.clear_waypoints()
             print("waypoints cleared")
+        elif args.command == "lock":
+            ctrl.lock()
+            print("screen locked (on-screen controls disabled)")
+        elif args.command == "unlock":
+            ctrl.unlock()
+            print("screen unlocked")
     finally:
         ctrl.close()
 

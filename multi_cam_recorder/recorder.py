@@ -62,6 +62,7 @@ from PyQt5.QtWidgets import (
 
 from calibrator import MODELS, CalibrationWorker, merged_calibration_config
 from phone_panel import PhonePanel
+from pose_sync import DEFAULT_MAX_GAP_MS, OUTPUT_NAMES, SyncWorker
 
 DEFAULT_CONFIG = {
     "cameras": [0, 2, 4, 6],
@@ -1021,6 +1022,167 @@ class CalibrateTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Sync tab
+# ---------------------------------------------------------------------------
+class SyncTab(QWidget):
+    """Generate a synchronized, interpolated anchor_T_phone pose per camera tick.
+
+    For each tick in timestamps.csv it averages the freshly-captured cameras'
+    capture times, maps that instant onto the laptop wall clock via meta.yaml's
+    clock_anchor, and interpolates the phone_pose.jsonl stream (translation lerp
+    + quaternion SLERP against real timestamps, so ARCore's 20-40 Hz jitter is
+    handled) to that time, expressed in the ARCore calibration-anchor frame.
+    Result -> <session>/anchor_T_phone_sync.jsonl. See pose_sync.py.
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+        self.worker = None
+        self._build_ui()
+        self.refresh_sessions()
+
+    def _build_ui(self):
+        root = QHBoxLayout(self)
+
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Recorded sessions"))
+        self.session_list = QListWidget()
+        self.session_list.itemSelectionChanged.connect(self._load_selected)
+        left.addWidget(self.session_list, stretch=1)
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self.refresh_sessions)
+        left.addWidget(refresh)
+        left_box = QWidget()
+        left_box.setLayout(left)
+        left_box.setMaximumWidth(280)
+        root.addWidget(left_box)
+
+        right = QVBoxLayout()
+        self.info = QLabel("select a session")
+        self.info.setWordWrap(True)
+        right.addWidget(self.info)
+
+        opt_row = QHBoxLayout()
+        opt_row.addWidget(QLabel("Max interpolation gap (ms)"))
+        self.gap_edit = QLineEdit(str(DEFAULT_MAX_GAP_MS))
+        self.gap_edit.setMaximumWidth(80)
+        self.gap_edit.setToolTip(
+            "Ticks whose two bracketing phone samples are farther apart than "
+            "this (dropped UDP packets) are still interpolated but flagged "
+            "valid=false with reason 'large_gap'.")
+        opt_row.addWidget(self.gap_edit)
+        opt_row.addStretch(1)
+        right.addLayout(opt_row)
+
+        self.run_btn = QPushButton("Generate sync")
+        self.run_btn.setMinimumHeight(40)
+        self.run_btn.setEnabled(False)
+        self.run_btn.clicked.connect(self._run)
+        right.addWidget(self.run_btn)
+
+        self.progress = QProgressBar()
+        self.progress.setValue(0)
+        right.addWidget(self.progress)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(1000)
+        right.addWidget(self.log_view, stretch=1)
+        root.addLayout(right, stretch=1)
+
+    def refresh_sessions(self):
+        self.session_list.clear()
+        base = self.cfg["output_dir"]
+        if not os.path.isdir(base):
+            return
+        for name in sorted(os.listdir(base), reverse=True):
+            path = os.path.join(base, name)
+            if os.path.isdir(path) and any(
+                f.startswith("cam_") for f in os.listdir(path)
+            ):
+                self.session_list.addItem(name)
+
+    def _session_dir(self):
+        items = self.session_list.selectedItems()
+        if not items:
+            return None
+        return os.path.join(self.cfg["output_dir"], items[0].text())
+
+    def _load_selected(self):
+        session_dir = self._session_dir()
+        if not session_dir or self.worker:
+            return
+        issues = []
+        if not os.path.exists(os.path.join(session_dir, "phone_pose.jsonl")):
+            issues.append("no phone_pose.jsonl (no phone was recorded)")
+        if not os.path.exists(os.path.join(session_dir, "timestamps.csv")):
+            issues.append("no timestamps.csv")
+        anchor_ok = False
+        meta_path = os.path.join(session_dir, "meta.yaml")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path) as f:
+                    anchor_ok = bool((yaml.safe_load(f) or {}).get("clock_anchor"))
+            except OSError:
+                pass
+        if not anchor_ok:
+            issues.append("meta.yaml has no clock_anchor (recorded before that feature)")
+
+        if issues:
+            self.info.setText("⚠ cannot sync this session:\n• " + "\n• ".join(issues))
+            self.run_btn.setEnabled(False)
+        else:
+            done = [n for n in OUTPUT_NAMES
+                    if os.path.exists(os.path.join(session_dir, n))]
+            self.info.setText(
+                f"ready: {os.path.basename(session_dir)}"
+                + (f"  —  {', '.join(done)} exists, will overwrite" if done else ""))
+            self.run_btn.setEnabled(True)
+
+    def _run(self):
+        if self.worker:
+            return  # generation is quick; no abort needed
+        session_dir = self._session_dir()
+        if not session_dir:
+            return
+        try:
+            max_gap_ms = float(self.gap_edit.text())
+            if max_gap_ms <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "Sync", "Max gap must be a positive number (ms).")
+            return
+        self.log_view.clear()
+        self.progress.setValue(0)
+        self.worker = SyncWorker(session_dir, max_gap_ms)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.log.connect(self.log_view.appendPlainText)
+        self.worker.done.connect(self._on_done)
+        self.worker.start()
+        self.run_btn.setText("Generating…")
+        self.run_btn.setEnabled(False)
+        self.session_list.setEnabled(False)
+
+    def _on_progress(self, done, total):
+        self.progress.setMaximum(max(1, total))
+        self.progress.setValue(done)
+
+    def _on_done(self, ok, message):
+        self.worker = None
+        self.run_btn.setText("Generate sync")
+        self.run_btn.setEnabled(True)
+        self.session_list.setEnabled(True)
+        self.log_view.appendPlainText(message)
+        if not ok:
+            QMessageBox.warning(self, "Sync failed", message)
+
+    def shutdown(self):
+        if self.worker:
+            self.worker.wait(5000)
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 class MainWindow(QWidget):
@@ -1032,17 +1194,21 @@ class MainWindow(QWidget):
         self.record_tab = RecordTab(cfg)
         self.playback_tab = PlaybackTab(cfg)
         self.calibrate_tab = CalibrateTab(cfg)
+        self.sync_tab = SyncTab(cfg)
         self.record_tab.session_saved.connect(self.playback_tab.refresh_sessions)
         self.record_tab.session_saved.connect(self.calibrate_tab.refresh_sessions)
+        self.record_tab.session_saved.connect(self.sync_tab.refresh_sessions)
         tabs.addTab(self.record_tab, "Record")
         tabs.addTab(self.playback_tab, "Playback")
         tabs.addTab(self.calibrate_tab, "Calibrate")
+        tabs.addTab(self.sync_tab, "Sync")
         root.addWidget(tabs)
 
     def closeEvent(self, event):
         self.record_tab.shutdown()
         self.playback_tab.shutdown()
         self.calibrate_tab.shutdown()
+        self.sync_tab.shutdown()
         event.accept()
 
 

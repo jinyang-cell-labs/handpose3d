@@ -53,6 +53,8 @@ current frame of *every* camera to that camera's file. Therefore:
     meta.yaml         # cameras, resolution, fps, start time, clock anchor
     timestamps.csv    # tick_idx, tick_time, per-camera seq + capture time
     phone_pose.jsonl  # phone ARCore pose stream (only if a phone was recorded)
+    anchor_T_phone_sync.jsonl  # per-tick interpolated phone pose (Sync tab;
+                               # world_T_phone_sync.jsonl when no anchor exists)
 ```
 
 ## Playback
@@ -76,6 +78,11 @@ packet format and clock-sync details):
   position, calibration counter and waypoint count are shown live).
 - **Calibrate / Waypoint / Clear** — remote-trigger the app's reference-pose
   anchor and accuracy waypoints (these ride on the pose stream).
+- **Lock/Unlock screen** — disable the phone's on-screen controls so a stray
+  touch can't trigger anything while the phone is handled as a controller; the
+  control channel and streams keep running. The button label reflects the last
+  action (the phone-side state isn't observable, so it assumes unlocked on
+  start).
 
 **Recording is joined to the cameras.** With "Record with cameras" checked and
 the phone connected, the main **Start/Stop recording** button starts and stops
@@ -161,3 +168,47 @@ especially the edges for fisheye (`pinhole-equi`) lenses — the tab warns when 
 camera's board coverage is below 50%. Extrinsics need many views where *both*
 rig cameras see the board together; if a rig reports too few synchronized
 views, record a take aiming the board so both its cameras see it at once.
+
+## Sync
+
+The **Sync** tab produces one interpolated phone pose per camera tick, so the
+phone stream (recorded at ARCore's jittery ~20-40 Hz) can be used frame-by-frame
+with the cameras. Pick a session and press **Generate sync**; the result lands
+in the session folder. See `pose_sync.py`.
+
+For each `tick_idx` in `timestamps.csv` it:
+
+1. averages the `*_capture_time` of the cameras that captured a **fresh** frame
+   that tick (duplicates from a slow camera are skipped via `*_seq`), giving the
+   tick's mean capture instant on the camera clock (`time.monotonic`);
+2. maps that instant onto the laptop **wall clock** via `meta.yaml`'s
+   `clock_anchor` — the common time base with the phone log;
+3. interpolates the phone stream to that wall time: **linear** on translation,
+   **SLERP** on rotation, against the samples' real `t_laptop` timestamps (so
+   the 20-40 Hz jitter is handled correctly, not assumed uniform).
+
+**Reference frame is auto-detected:**
+
+- If the stream carries the ARCore **calibration anchor** (`apx…aqw`, present
+  after **Calibrate** was pressed), each pose is expressed in the anchor frame,
+  `anchor_T_phone = inv(world_T_anchor) · world_T_phone`, computed *per packet*
+  so ARCore's world-frame drift / loop-closure jumps cancel. Output →
+  `anchor_T_phone_sync.jsonl`.
+- If no anchor is present, the anchor is treated as identity/origin and the pose
+  stays in the ARCore world frame, `world_T_phone`. Output →
+  `world_T_phone_sync.jsonl`.
+
+**Output** — a `meta` line, then one `pose` line per `tick_idx` (so it stays
+index-aligned with the frames):
+
+```json
+{"type":"meta","mode":"world","frame":"world_T_phone","n_ticks":5664,"n_valid":5635,...}
+{"type":"pose","tick_idx":500,"t_wall_ns":...,"t_mono_ns":...,"valid":true,
+ "gap_ms":33.3,"calib":0,"p":[x,y,z],"q":[x,y,z,w]}
+```
+
+Ticks that can't be interpolated still get a line with `valid:false` and a
+`reason`: `before_data` / `after_data` (outside the phone stream), `large_gap`
+(bracketing samples farther apart than *Max interpolation gap*, e.g. dropped UDP
+packets — the pose is still filled in), `calib_gap` (straddling a
+re-calibration onto a different anchor), or `no_pose_data`.
