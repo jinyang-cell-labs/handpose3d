@@ -1,0 +1,238 @@
+# =============================================================================
+#  mediapipe_detection_debug_node - configuration
+#
+#  Standalone MediaPipe 2D hand-landmark viewer. It opens the camera itself and
+#  publishes ONLY visualization: no 3D pose solve, no teleop output, no shared
+#  state with the teleop pipeline.
+#
+#    ros2 launch body_cam_teleop mediapipe_detection_debug.launch.py
+#
+#  IMPORTANT: V4L access is exclusive, so this cannot share a camera_device with
+#  a running hand_landmarks_node. Stop the pipeline first, or point this at a
+#  different device.
+#
+#  Outputs (the launch file runs the node in the global namespace by default,
+#  so these resolve to /mediapipe_debug/...):
+#    image_annotated  the frame with the skeleton drawn on it (RViz Image)
+#    markers          the same 2D landmarks on a virtual image plane (RViz 3D)
+#    landmarks        handpose3d_msgs/HandLandmarks, same contract as the pipeline
+#    stats            1 JSON std_msgs/String per summary window
+#  With enable_stereo (see the stereo section) additionally:
+#    image_annotated_stereo  the second camera's annotated frame
+#    markers_3d              triangulated 3D hand skeletons (metres)
+#
+#  Most drawing / filter / logging parameters are runtime-settable:
+#    ros2 param set /mediapipe_detection_debug_node mirror_input true
+# =============================================================================
+
+/**/mediapipe_detection_debug_node:
+  ros__parameters:
+    # ---- camera ------------------------------------------------------------
+    # In single-camera mode camera_name only labels the output frames/overlay.
+    # With enable_stereo it MUST match an entry in intrinsics.yaml and
+    # extrinsics.yaml (the landmarks are undistorted and triangulated).
+    camera_name: "camera0"
+    # V4L device index or path (v4l2-ctl --list-devices).
+    camera_device: "2"
+    frame_rate: 30.0
+    capture_width: 1280
+    capture_height: 720
+    # Most UVC webcams need MJPG to reach full resolution/fps.
+    fourcc: "MJPG"
+
+    # ---- stereo triangulation -----------------------------------------------
+    # Open a second camera, run MediaPipe on BOTH frames, and triangulate every
+    # hand whose resolved Left/Right label is accepted in both views into a 3D
+    # skeleton (markers_3d, metres, in the extrinsics world frame = camera0's
+    # optical frame; the node publishes a root_frame -> <world>_3d static TF
+    # rotated so the RViz view matches the annotated image). The second camera
+    # also gets its own annotated image (stereo_annotated_topic). Stats and the
+    # landmarks message keep following the primary camera.
+    # NOTE: stereo runs a second HandLandmarker (and forces synchronous
+    # inference), so it roughly doubles the per-frame CPU/GPU cost.
+    enable_stereo: true
+    stereo_camera_name: "camera1"
+    stereo_camera_device: "4"
+    # Calibration used for the triangulation; both camera names must exist in
+    # both files. Empty = the packaged config/intrinsics.yaml + extrinsics.yaml.
+    intrinsics_file: ""
+    extrinsics_file: ""
+
+    # ---- reprojection refinement (stereo mode) -------------------------------
+    # Instead of trusting the 21 per-joint triangulations (noisy along depth,
+    # bone lengths flex), fit the rigid MediaPipe world-landmark hand model to
+    # the detections: solve the SE(3) pose minimizing pixel reprojection error
+    # in EVERY camera that accepted the hand (Levenberg-Marquardt + Huber).
+    # Two views constrain position and orientation; when only ONE camera sees
+    # the hand the solve still runs on that single view (orientation + bearing
+    # stay good) and the depth comes from the ray filter below. false = publish
+    # the raw triangulation only, as before.
+    enable_refine: true
+    # MediaPipe's world landmarks are an average-size canonical hand; scale
+    # them to the operator. Wrong scale directly biases mono (one-view) depth.
+    hand_size_scaling_factor: 1.3
+    # Huber loss width in pixels, and the reject threshold on the final RMS
+    # reprojection error (a fit worse than this is dropped, not published).
+    refine_huber_px: 5.0
+    refine_reject_rms_px: 25.0
+    # Depth filter along the ray from the RIG CENTRE (midpoint of the two
+    # camera centres) to the palm centroid: EMA-updated on two-view frames
+    # (this alpha), HELD on one-view frames, forgotten after ~3 s unseen.
+    ray_filter_alpha: 0.25
+    # Also draw the raw per-joint triangulation in grey for comparison.
+    draw_raw_triangulation: true
+
+    # ---- virtual pinhole crops (stereo + refine) ------------------------------
+    # Two-pass UmeTrack-style inference to fix the fisheye-skewed world
+    # landmarks. Pass 1 (the normal full-frame run on the raw fisheye image)
+    # provides the detection and the 2D pixel measurements. For each accepted
+    # hand a virtual PERSPECTIVE camera (crop_size_px square, optical axis
+    # rotated through the hand, FOV adapted to its angular extent) is rendered
+    # from the fisheye frame and MediaPipe runs AGAIN on it -- locally
+    # distortion-free and in-distribution, so its 3D world landmarks have no
+    # skew. The refine fit poses those clean world landmarks against pass 1's
+    # 2D landmarks. Falls back to the full-frame world landmarks when the
+    # crop re-detect misses (3D label shows [.|crop] vs [.|full]).
+    # COST: one extra inference per hand per frame (PoC: expect lower fps).
+    enable_pinhole_crops: true
+    crop_size_px: 256
+    # Crop half-FOV = clamp(margin * hand angular half-extent, min/2, max/2):
+    # the hand should fill most of the crop, like MediaPipe's training data.
+    crop_fov_margin: 1.8
+    crop_fov_min_deg: 30.0
+    crop_fov_max_deg: 80.0
+    # Consistency gate: the crop's own landmarks, re-projected back into the
+    # fisheye frame, must land within this mean distance (px) of the pass-1
+    # landmarks. Rejects the crop detector locking onto a DIFFERENT hand
+    # (the twisted-skeleton failure); rejected crops fall back to the
+    # full-frame model and are tagged MISMATCH in the crop mosaic.
+    crop_match_px: 25.0
+    # Publish the annotated crop mosaic (crops_topic below) to inspect what
+    # the second pass actually sees.
+    publish_crops: true
+    # Debug shelf: publish EVERY raw hand_world_landmarks set of the tick --
+    # up to 8 (2 cameras x 2 hands x 2 passes) -- as small skeletons on a
+    # fixed grid beside the image plane (world_models topic / frame).
+    # Columns: Left full|crop then Right full|crop; rows: camera0 (top) /
+    # camera1. Handedness = the usual left/right colour; the caption names
+    # the source (cam0_full, cam0_crop, cam1_full, cam1_crop) -- the fisheye
+    # skew is exactly the full-vs-crop difference. Also runs the crop pass
+    # on BOTH cameras (up to 4 extra inferences/frame, not 2).
+    publish_world_models: true
+
+    # ---- MediaPipe ---------------------------------------------------------
+    # model_path: "" resolves to <body_cam_teleop share>/models/hand_landmarker.task
+    model_path: ""
+    num_hands: 2
+    # Lower these to make detection easier (they are the pipeline's gate 1).
+    min_hand_detection_confidence: 0.4
+    min_hand_presence_confidence: 0.4
+    # The one that governs dropouts mid-motion: below it MediaPipe throws the
+    # track away and re-runs full detection.
+    min_tracking_confidence: 0.5
+    # "gpu" = OpenGL ES (typically the iGPU), falls back to CPU automatically.
+    delegate: "gpu"
+    # false (default here): synchronous VIDEO mode — simplest, and a debug view
+    # does not need maximum throughput. true = LIVE_STREAM, matching the
+    # pipeline's default, so tracking/flow-limiter behaviour is reproduced.
+    async_inference: false
+    # Flip the frame horizontally BEFORE inference. This FLIPS MediaPipe's
+    # Left/Right classification: handedness assumes a third-person unmirrored
+    # view, so an egocentric body camera often reports the opposite side. Toggle
+    # it and watch "label flips" / per-label counts in the summary to find the
+    # setting that labels your hand consistently.
+    mirror_input: false
+
+    # ---- filters (same gates as the pipeline) -------------------------------
+    # left_only | right_only | left_and_right. Default left_and_right so the
+    # debug view hides nothing; set it to whatever the pipeline uses to see
+    # exactly which detections that pipeline would drop (they are drawn in
+    # reject_color and tagged with the reason, not hidden).
+    hand_filter_mode: "left_and_right"
+    # Applies to MediaPipe's raw handedness score. With the label tracker on
+    # (below) leave this at 0.0 — the tracker replaces the label anyway.
+    min_handedness_confidence: 0.0
+
+    # ---- left/right label tracker (hand_label_tracker.py) -------------------
+    # Replaces MediaPipe's per-frame Left/Right label using the egocentric
+    # rig's constraints (one operator, hands never cross):
+    #   two hands visible -> labelled by wrist x-order (deterministic)
+    #   one hand, known track -> sticky label (survives crossing the midline)
+    #   one hand, new track  -> image-side + MediaPipe vote + exclusivity,
+    #                           accumulated for commit_frames, then committed
+    # Overlay: "Left? 0.62 [cues]" = provisional, "(mp:Right)" = overridden.
+    # Summary: corrected_labels counts overrides. false = raw MediaPipe labels.
+    use_label_tracker: true
+    # true: the operator's left hand appears on the image's LEFT (unmirrored
+    # egocentric camera, as confirmed on this rig). false for mirrored feeds.
+    tracker_left_is_image_left: true
+    # Half-width around the image centreline (fraction of width) where the
+    # side-of-image cue abstains instead of voting.
+    tracker_side_dead_zone_frac: 0.10
+    # Frames of accumulated evidence before a lone NEW hand's label commits.
+    tracker_commit_frames: 5
+    # A hand unseen for this long loses its track (and its sticky label).
+    tracker_max_gap_sec: 0.5
+    # Max wrist move between frames (fraction of width) to stay on a track.
+    tracker_max_jump_frac: 0.35
+    # Two wrists closer than this (fraction of width) are the same physical
+    # hand — MediaPipe occasionally detects one hand twice.
+    tracker_duplicate_sep_frac: 0.06
+
+    # ---- annotated image (the main RViz view) ------------------------------
+    enable_annotated_image: true
+    # Downscale the published overlay to save DDS bandwidth/CPU (1.0 = full
+    # resolution). The drawing itself always happens at full resolution.
+    annotated_image_scale: 1.0
+    draw_connections: true
+    draw_landmark_ids: true
+    draw_handedness: true
+    draw_bounding_box: true
+    draw_header: true
+    # Draw hands the filters rejected (in reject_color, with the reason).
+    draw_rejected: true
+    point_radius: 4
+    line_thickness: 2
+    font_scale: 0.5
+    # BGR triplets. Left = green, Right = orange, rejected = red.
+    left_color: [80, 220, 100]
+    right_color: [60, 170, 255]
+    reject_color: [70, 70, 235]
+
+    # ---- RViz markers (2D landmarks on a virtual image plane) --------------
+    # The pixels are scaled onto a plane plane_width_m wide (aspect preserved),
+    # x right / y up / origin at the image centre, so the 3D view matches the
+    # annotated image. RViz's fixed frame is root_frame; the node publishes a
+    # static root_frame -> <camera_name>_image_plane transform.
+    enable_markers: true
+    root_frame: "mediapipe_debug"
+    plane_width_m: 1.0
+    plane_distance_m: 0.0
+    marker_point_size: 0.02
+    marker_line_width: 0.008
+    marker_text_size: 0.05
+    marker_lifetime_sec: 0.3
+
+    # ---- landmarks message + logging --------------------------------------
+    # Publish handpose3d_msgs/HandLandmarks (accepted hands only, exactly like
+    # hand_landmarks_node) so existing tools can consume this node's output.
+    enable_landmarks: true
+    # Per-frame detection lines (throttled by log_throttle_sec).
+    log_detections: false
+    # Per-window summary: fps, per-label counts + mean handedness score, label
+    # flips, and how many hands the filter rejected. This is the fastest way to
+    # tell a genuine detection failure from a handedness mislabel.
+    log_summary: true
+    log_summary_period_sec: 5.0
+    log_throttle_sec: 1.0
+
+    # ---- topics (relative -> resolved inside the node namespace) -----------
+    annotated_topic: "mediapipe_debug/image_annotated"
+    markers_topic: "mediapipe_debug/markers"
+    landmarks_topic: "mediapipe_debug/landmarks"
+    stats_topic: "mediapipe_debug/stats"
+    # Stereo-only outputs (published when enable_stereo is true).
+    stereo_annotated_topic: "mediapipe_debug/image_annotated_stereo"
+    markers3d_topic: "mediapipe_debug/markers_3d"
+    crops_topic: "mediapipe_debug/crops"
+    world_models_topic: "mediapipe_debug/world_models"

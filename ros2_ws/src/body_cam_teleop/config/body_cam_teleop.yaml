@@ -1,0 +1,334 @@
+# =============================================================================
+#  body_cam_teleop - configuration (multi-camera)
+#
+#  One identical pipeline pair per camera, each in its own namespace (/cam0,
+#  /cam1, ...), plus one selector:
+#    <ns>/hand_landmarks_node (Python)  camera capture + MediaPipe -> HandLandmarks
+#    <ns>/hand_pose_node      (C++)     Ceres PnP + operator_body transform
+#                                       -> TeleopMessage on <ns>/teleop
+#    teleop_mux_node          (Python)  sticky per-hand selection over all
+#                                       <ns>/teleop -> /teleop_converted
+#
+#  Shared parameters live ONCE under the /**/ wildcard blocks below (ROS 2
+#  param files reject yaml anchors, wildcards are the supported way to share);
+#  the per-camera blocks at the bottom hold only what differs per camera.
+#  The launch file reads the per-camera blocks to decide which namespaces to
+#  spawn — adding a camera = adding one block there (its camera_name must
+#  exist in intrinsics.yaml).
+#
+#  Calibration: intrinsics come from intrinsics.yaml (multi-camera, from
+#  calibration_multi_cam). The camera is mounted at the operator body center,
+#  so camera -> operator_body is just the fixed operator_body_position/
+#  rotation offset below (identity by default) — no board detection, no rig
+#  extrinsics.
+# =============================================================================
+
+/**/hand_landmarks_node:
+  ros__parameters:
+    # camera_name / camera_device are per-camera (bottom of this file).
+    frame_rate: 30.0
+    capture_width: 1280
+    capture_height: 720
+    # Most UVC webcams need MJPG to reach full resolution/fps.
+    fourcc: "MJPG"
+
+    # ---- MediaPipe -------------------------------------------------------
+    # model_path: "" resolves to <body_cam_teleop share>/models/hand_landmarker.task
+    model_path: ""
+    num_hands: 2
+    min_hand_detection_confidence: 0.5
+    min_hand_presence_confidence: 0.5
+    min_tracking_confidence: 0.5
+    # "gpu" offloads inference to OpenGL ES (typically the iGPU) and falls
+    # back to CPU automatically; "cpu" runs TFLite on the CPU. NOTE: with N
+    # cameras there are N MediaPipe instances — watch total CPU/GPU load.
+    delegate: "gpu"
+    # true (default): LIVE_STREAM mode — inference runs on MediaPipe's own
+    # thread and overlaps the next frame's capture (throughput = slowest
+    # stage instead of the sum of all stages). MediaPipe drops frames when
+    # inference lags (perf counter "dropped"; capture_fps - fps). false:
+    # synchronous VIDEO mode (the pre-async behavior).
+    async_inference: true
+    # left_only | right_only | left_and_right
+    hand_filter_mode: "left_and_right"
+    min_handedness_confidence: 0.0
+
+    # ---- output ------------------------------------------------------------
+    # Relative topics resolve inside the camera namespace: /camN/body_cam_teleop/...
+    landmarks_topic: "body_cam_teleop/landmarks"
+    # Publish the raw frame for hand_pose_node's reprojection overlay. Keep
+    # in sync with hand_pose_node.
+    enable_reprojection: true
+    image_topic: "body_cam_teleop/image_raw"
+    # Publish per-stage wall times (capture/convert/mediapipe/publish) once a
+    # second as JSON on body_cam_teleop/perf; ~free. Record with perf:=true.
+    enable_perf: true
+
+    # ---- stage diagnostics ---------------------------------------------------
+    # A hand must pass 5 gates to reach the arm controller; this node owns the
+    # first two. Each flag turns on the logging for ONE gate and every reject
+    # line names the measured value AND the threshold that rejected it. All are
+    # runtime-settable: `ros2 param set /cam0/hand_landmarks_node log_handedness true`.
+    #
+    #   log_capture     frame size + capture time per tick
+    #   log_detection   GATE 1 - how many hands MediaPipe returned; on zero it
+    #                   reports the three confidence thresholds to lower
+    #   log_handedness  GATE 2 - per hand: accepted, or dropped by the
+    #                   hand_filter_mode label filter / min_handedness_confidence
+    #                   / missing world landmarks
+    #   log_publish     how many of the raw hands survived, and to which topic
+    log_capture: false
+    log_detection: false
+    log_handedness: false
+    log_publish: false
+    # Periodic funnel count (how many hands each gate ate) — the fastest way to
+    # see WHICH gate is dropping them before turning on the detail logs.
+    log_gate_summary: true
+    # Detail lines are throttled per (stage, reason, hand), so a Left reject
+    # never masks a Right one. Seconds; 0 logs every frame (spammy).
+    log_throttle_sec: 2.0
+    log_summary_period_sec: 5.0
+
+/**/hand_pose_node:
+  ros__parameters:
+    # camera_name is per-camera (bottom of this file).
+
+    # ---- calibration (files in this package's config folder) --------------
+    # Leave empty to default to <calibration_dir>/intrinsics.yaml;
+    # calibration_dir is injected by the launch file as this package's
+    # share/config directory.
+    intrinsics_file: ""
+    # camera -> operator_body rigid offset. The camera is mounted at the
+    # operator body center, so this is identity; the rotation (intrinsic XYZ
+    # euler [deg]) is only there to re-align the camera optical axes with the
+    # body convention if needed. Position [m] in the camera frame.
+    body_frame: "operator_body"
+    operator_body_position: [0.0, 0.0, 0.0]
+    operator_body_rotation: [0.0, 0.0, 0.0]
+
+    # ---- input -------------------------------------------------------------
+    landmarks_topic: "body_cam_teleop/landmarks"
+    # Drop detections below this handedness/detection score.
+    min_score: 0.5
+
+    # ---- pose estimation ----------------------------------------------------
+    # MediaPipe's hand model is generic; this factor rescales it to the
+    # operator's real hand (reprojection is scale/depth ambiguous). 1.3 places
+    # a larger-than-model hand at the correct (farther) depth.
+    hand_size_scaling_factor: 0.6
+    # One-sided penalty keeping every joint >= margin [m] in front of the
+    # camera (breaks the PnP front/back mirror); weight is px per metre.
+    cheirality_margin: 0.05
+    cheirality_weight: 1000.0
+    # Initial guess depth [m] along the optical axis when there is no previous
+    # pose to warm-start from.
+    seed_depth_m: 0.5
+    # Seed each solve from the previous frame's pose (faster + steadier).
+    warm_start: true
+    # ---- position noise filter ---------------------------------------------
+    # The frame-to-frame position step is split into its component along the
+    # camera->hand ray and the two lateral components, each attenuated by its
+    # own gain before being applied. Monocular PnP noise is dominated by the
+    # ray (the solve is scale/depth ambiguous), so ray_filter_k < lateral_
+    # filter_k. All gains in (0, 1]; a real step converges geometrically
+    # (~63% within 1/k frames; k=0.3 @ 30 fps -> ~0.1 s lag). The filter
+    # resets after pose_timeout_sec without a pose, so re-detection snaps.
+    ray_filter_k: 0.3
+    lateral_filter_k: 0.7
+    # Distance falloff: pixel sensitivity drops ~1/L, so both gains are
+    # scaled by f(L) = clamp(filter_ref_dist_m / L, filter_min_scale, 1.0)
+    # with L = hand distance to camera [m]. No extra filtering inside the
+    # reference distance; ~1/L beyond it; never below the filter_min_scale
+    # floor (so motion is never frozen). filter_ref_dist_m: 0.0 disables.
+    filter_ref_dist_m: 0.6
+    filter_min_scale: 0.2
+    max_solver_iterations: 50
+    # Publish an anatomical palm frame (origin=wrist, y=palm normal,
+    # z=fingers->wrist bisector) instead of MediaPipe's arbitrary local frame.
+    anatomical_hand_frame: true
+    # Fixed rotation applied in the hand's own frame (intrinsic XYZ euler,
+    # degrees) to align with the arm end-effector convention.
+    hand_orientation_offset_rpy: [0.0, 0.0, 0.0]
+
+    # ---- teleop output -------------------------------------------------------
+    # Relative -> /camN/teleop; teleop_mux_node merges these into
+    # /teleop_converted (body-frame poses, best-effort QoS).
+    output_topic: "teleop"
+    publish_hz: 50.0
+    trigger_button_index: 5    # BUTTON_TRIGGER, holds the arm gate engaged
+    num_joy_buttons: 16
+    # Release a hand's gate when no fresh pose arrived within this window [s].
+    pose_timeout_sec: 0.5
+
+    # ---- reprojection / RViz visualization ----------------------------------
+    # false (default): no overlay, no markers — minimum CPU (the raw image
+    # never crosses DDS). true: publishes the reprojection overlay
+    # (/camN/body_cam_teleop/image_reprojected) and skeleton markers +
+    # per-hand TF. Debug TF/marker frames are namespace-prefixed
+    # (camN/operator_body, ...) so instances don't collide.
+    # Keep in sync with hand_landmarks_node.
+    enable_reprojection: false
+    image_topic: "body_cam_teleop/image_raw"
+    reprojected_topic: "body_cam_teleop/image_reprojected"
+    markers_topic: "body_cam_teleop/markers"
+    image_buffer_size: 15
+    image_match_tol: 0.05      # max stamp mismatch image<->landmarks [s]
+    joint_size: 0.012          # marker sphere diameter [m]
+    line_width: 0.006          # marker bone thickness [m]
+
+    # ---- perf instrumentation ------------------------------------------------
+    # Publish per-stage wall times (undistort/solve/reproject, plus
+    # capture->pose latency) once a second as JSON on body_cam_teleop/perf;
+    # ~free. Record with perf:=true, analyze with scripts/perf_report.py.
+    enable_perf: true
+
+    # ---- stage diagnostics ---------------------------------------------------
+    # This node owns gates 3-5 of the funnel (hand_landmarks_node owns 1-2).
+    # One flag per gate; every reject line names the measured value AND the
+    # threshold that rejected it. All runtime-settable:
+    # `ros2 param set /cam0/hand_pose_node log_solve true`.
+    #
+    #   log_input       what arrived from hand_landmarks_node (count + age); on
+    #                   an empty message it points back at gates 1-2
+    #   log_score_gate  GATE 3 - per hand: dropped by min_score (which is
+    #                   MediaPipe's HANDEDNESS confidence, not detection
+    #                   confidence), by the 21-landmark contract, or duplicated
+    #   log_solve       GATE 4 - Ceres outcome: reproj rms, iterations, joints
+    #                   used, initial->final cost, termination reason, warm/cold
+    #                   seed. On failure it prints why the solve was unusable.
+    #   log_pose        the resulting pose: camera-frame position, distance,
+    #                   body-frame position, how much the ray filter cut the
+    #                   step, and whether the anatomical frame was degenerate
+    #   log_trigger     GATE 5 - trigger engage/release transitions with the
+    #                   pose age vs pose_timeout_sec. This is the direct answer
+    #                   to "why did teleop_mux_node drop to None".
+    log_input: false
+    log_score_gate: false
+    log_solve: false
+    log_pose: false
+    log_trigger: false
+    # Periodic funnel count across all five gates — start here, then turn on the
+    # detail flag for whichever gate is eating the hands.
+    log_gate_summary: true
+    log_throttle_sec: 2.0
+    log_summary_period_sec: 5.0
+    # Warn when a solve CONVERGES but the placed model still misses the detected
+    # landmarks by more than this [px] — a converged-but-wrong fit publishes a
+    # meaningless pose and nothing gates on it. Points at
+    # hand_size_scaling_factor / intrinsics. 0 disables.
+    log_reproj_warn_px: 30.0
+
+hand_gesture_mapping_node:
+  ros__parameters:
+    # Which camera block's landmarks stream to measure gestures on: the node
+    # subscribes to /<camera_namespace>/<landmarks_topic> (HandLandmarks) and
+    # uses landmarks_world (metric, hand-local — angles are scale-invariant).
+    camera_namespace: "cam0"
+    landmarks_topic: "body_cam_teleop/landmarks"
+    # Drop hands below this handedness/detection score (same gate as
+    # hand_pose_node.min_score).
+    min_score: 0.5
+    # Per-hand Float32MultiArray output, one message per landmarks frame the
+    # hand appears in. Values in [0, 1] (joint curl = 180 deg minus the
+    # interior angle between adjacent skeleton segments, normalized by 180),
+    # ordered [finger_curl, thumb_rotate]: finger_curl averages the
+    # index/middle/ring/pinky curls (each the mean of its 3 joints);
+    # thumb_rotate averages the thumb curl (2 distal joints) and the single
+    # 0-1/1-2 (CMC) rotation joint.
+    left_output_topic: "hand_gestures/left"
+    right_output_topic: "hand_gestures/right"
+
+    # ---- actuator command output -------------------------------------------
+    # The node also drives the hand actuators directly (no open/close
+    # interpolation like hands_node): each gesture value is linearly
+    # reprojected into actuator space (see gesture_reprojection) and published
+    # as an ActuatorCommand, one per received landmarks frame (camera rate,
+    # so the command stays inside the controller's 1 s freshness window while
+    # the camera runs; hands hold their last pose when out of view). Nothing
+    # is published until the first hand detection AND the /hands/start
+    # Trigger service has been called — this node replaces hands_node as the
+    # controller's "hands" subsystem (serving /hands/start, /hands/stop,
+    # /hands/status; don't run both nodes). Per-joint kp/kd come from
+    # the robot model's controller_config.yaml (robot_config.yaml
+    # `robot_model` -> humanoid_model share dir), with hand_stiffness /
+    # hand_damping as fallback for joints missing from those maps.
+    actuator_command_topic: "cmd/hands/actuator"
+    robot_config_path: "/workspace/robot/ros2_ws/config/robot_config.yaml"
+    hand_stiffness: 0.2
+    hand_damping: 0.001
+    # Temporal filter on the [finger_curl, thumb_rotate] values feeding the
+    # actuator path, applied BEFORE the vision clamp and reprojection.
+    # One-pole low-pass, gain in (0, 1]: filt += k * (raw - filt) per frame;
+    # 1.0 disables (~63% of a step within 1/k frames; k=0.3 @ 30 fps ~ 0.1 s
+    # lag). The filter snaps to the measurement when the hand was unseen for
+    # longer than gesture_filter_timeout_sec, so re-detection doesn't drag
+    # from a stale value. The hand_gestures/{left,right} debug topics always
+    # carry the RAW values — use those to calibrate the vision points below.
+    gesture_filter_k: 0.3
+    gesture_filter_timeout_sec: 0.5
+    # Linear reprojection vision -> actuator, two calibration points per hand.
+    # Each entry is a [finger_curl, thumb_rotate] pair: *_vision holds the
+    # gesture values measured at that hand pose, *_actuator the actuator
+    # positions [rad] the pose should command. The filtered vision value is
+    # clamped to [vision_min, vision_max] (defaults: the elementwise
+    # open/close_vision envelope — set them explicitly to widen/narrow it)
+    # before the per-mechanism linear mapping; the result is always clamped
+    # to the joint's [endstop_position_min, endstop_position_max] from the
+    # model's actuator_config.yaml.
+    gesture_reprojection:
+      left:
+        open_vision: [0.1, 0.08]
+        open_actuator: [-0.3491, 0.0]
+        close_vision: [0.3, 0.16]
+        close_actuator: [1.0, -0.9]
+        vision_min: [0.1, 0.08]
+        vision_max: [0.3, 0.16]
+      right:
+        open_vision: [0.1, 0.08]
+        open_actuator: [-0.3491, 0.0]
+        close_vision: [0.3, 0.16]
+        close_actuator: [1.0, -0.9]
+        vision_min: [0.1, 0.08]
+        vision_max: [0.3, 0.16]
+
+teleop_mux_node:
+  ros__parameters:
+    # input_topics is injected by the launch file (one <ns>/teleop per camera
+    # block below) so the camera set is defined in exactly one place.
+    output_topic: "/teleop_converted"
+    publish_hz: 50.0
+    trigger_button_index: 5
+    num_joy_buttons: 16
+    # A source whose last message is older than this is dead (crashed node /
+    # stalled camera) even if its trigger was held.
+    source_timeout_sec: 0.5
+    body_frame: "operator_body"
+
+    # ---- stage diagnostics ---------------------------------------------------
+    # Source switches are ALWAYS logged and now carry the reason the old source
+    # stopped offering (no message / stale by N s / trigger not held).
+    #   log_offers        throttled per-source status while a hand has no source
+    #                     — which camera should have offered it, and why it did not
+    #   log_gate_summary  periodic count of how many ticks each source held each hand
+    log_offers: false
+    log_gate_summary: false
+    log_throttle_sec: 2.0
+    log_summary_period_sec: 5.0
+
+# =============================================================================
+#  Cameras — one namespace block per camera; ONLY per-camera identity here.
+#  camera_name must exist in intrinsics.yaml; camera_device is the V4L device
+#  index or path for that physical camera (v4l2-ctl --list-devices).
+#  The launch file spawns one landmarks+pose pair per block.
+# =============================================================================
+
+/cam0:
+  hand_landmarks_node:
+    ros__parameters:
+      camera_name: "camera0"
+      camera_device: "4"
+  hand_pose_node:
+    ros__parameters:
+      camera_name: "camera0"
+
+

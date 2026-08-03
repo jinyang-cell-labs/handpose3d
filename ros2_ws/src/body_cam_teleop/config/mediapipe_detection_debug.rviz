@@ -1,0 +1,197 @@
+# RViz view for mediapipe_detection_debug_node: the annotated camera frame plus
+# the same 2D landmarks laid out on a virtual image plane in the 3D view.
+# Topics assume the node runs in the global namespace (the launch file's
+# default); if you pass namespace:=foo, prefix the topics and frames with /foo.
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 70
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /AnnotatedImage1
+        - /HandLandmarks2D1
+      Splitter Ratio: 0.5
+    Tree Height: 400
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Displays:
+    # The main view: the camera frame with the 21-point skeleton, landmark
+    # indices and the handedness label + score drawn on it.
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: AnnotatedImage
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /mediapipe_debug/image_annotated
+      Value: true
+    # The second camera's annotated frame (published only with enable_stereo).
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: AnnotatedImageStereo
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /mediapipe_debug/image_annotated_stereo
+      Value: true
+    # The virtual pinhole crops the second inference pass sees (published only
+    # with enable_pinhole_crops): one annotated tile per hand.
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: PinholeCrops
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /mediapipe_debug/crops
+      Value: true
+    # The same 2D landmarks on the virtual image plane: joints, bones, a text
+    # label per hand, and a border rectangle marking the image extent.
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: HandLandmarks2D
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mediapipe_debug/markers
+      Value: true
+    # World-models debug shelf (publish_world_models): the raw
+    # hand_world_landmarks of every camera/hand/pass on a fixed grid beside
+    # the image plane. Colour = handedness; caption = source (cam0_crop, ...).
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: WorldModels
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mediapipe_debug/world_models
+      Value: true
+    # Triangulated 3D hand skeletons (metres; published only with
+    # enable_stereo). They live in the <world>_3d frame the node broadcasts.
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: HandLandmarks3D
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mediapipe_debug/markers_3d
+      Value: true
+    - Alpha: 0.5
+      Cell Size: 0.1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+      Marker Scale: 0.2
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Update Interval: 0
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    # The node publishes a static root_frame -> <camera_name>_image_plane
+    # transform. Both names get the node namespace as a prefix, so change this
+    # if you launch with namespace:= or override root_frame. The Image display
+    # works regardless of TF.
+    Fixed Frame: mediapipe_debug
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/FocusCamera
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 1.6
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0.0
+        Y: 0.0
+        Z: 0.0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      # Looking nearly straight down -z at the image plane, so the 3D skeleton
+      # has the same orientation as the annotated image.
+      Pitch: 1.5697
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 1.5707
+    Saved: ~
+Window Geometry:
+  AnnotatedImage:
+    collapsed: false
+  AnnotatedImageStereo:
+    collapsed: false
+  PinholeCrops:
+    collapsed: false
+  Displays:
+    collapsed: false
+  Height: 900
+  Views:
+    collapsed: true
+  Width: 1600
