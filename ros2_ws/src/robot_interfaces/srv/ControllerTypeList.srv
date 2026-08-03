@@ -1,0 +1,5 @@
+# Returns all available controller types (discovered policies compatible with the active robot).
+---
+bool success
+string message
+string[] available_types

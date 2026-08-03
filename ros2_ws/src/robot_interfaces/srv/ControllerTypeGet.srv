@@ -1,0 +1,8 @@
+# Returns the active controller type.
+
+---
+
+bool success
+string message
+string controller_type    # Active controller type name
+string[] available_types  # All registered controller types

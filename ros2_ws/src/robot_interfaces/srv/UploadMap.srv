@@ -1,0 +1,6 @@
+# Triggers upload of the latest buffered map to the object store
+
+---
+
+# Indicate successful upload of the map
+bool success

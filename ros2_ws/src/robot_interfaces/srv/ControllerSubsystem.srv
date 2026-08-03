@@ -1,0 +1,10 @@
+# Start or stop a control subsystem. A subsystem is an independently runnable
+# component that produces joint commands (e.g. an RL policy, a teleop handler).
+
+string name
+bool start   # true = start, false = stop
+
+---
+
+bool success
+string message

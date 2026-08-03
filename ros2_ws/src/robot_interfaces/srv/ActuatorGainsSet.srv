@@ -1,0 +1,10 @@
+# Sets joint stiffness (Kp) and damping (Kd) gains.
+
+string[] name
+float64[] stiffness
+float64[] damping
+
+---
+
+bool success
+string message

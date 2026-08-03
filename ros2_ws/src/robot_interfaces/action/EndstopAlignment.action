@@ -1,0 +1,19 @@
+# Goal: Sequential endstop alignment for actuators
+#
+# Motors align sequentially (one left/right pair at a time) to avoid collisions.
+# Left + right sides of the same joint align simultaneously (separate CAN buses).
+# Empty name list = align all actuators.
+string[] name
+---
+# Result: Final outcome after completion
+bool success
+string message
+string[] succeeded_name
+string[] failed_name
+string[] failed_reason
+---
+# Feedback: Progress updates during operation
+string status
+uint32 current_step
+uint32 total_steps
+string[] current_joints

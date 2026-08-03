@@ -1,0 +1,20 @@
+# Goal: Initiate firmware flashing operation
+#
+# Addressing: joints are resolved by name via the device mapping. An empty
+# name[] means all configured actuators (the robot owns the "all" set).
+string session_id            # References uploaded firmware
+string[] name                # Joint names (empty = all configured actuators)
+string firmware_version      # Optional metadata (filename) for logging
+bool delete_eeprom           # Erase EEPROM (last flash page) before writing
+---
+# Result: Final outcome after completion
+bool success
+string message
+string[] failed_name         # Names of joints that failed flashing
+---
+# Feedback: Progress updates during operation
+string status                # Current status message
+int32 progress_percent       # Overall progress (0-100)
+string current_joint         # Currently flashing joint name
+int32 current_joint_index    # Index of current joint (0-based)
+int32 total_joints           # Total number of joints to flash

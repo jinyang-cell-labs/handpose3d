@@ -1,0 +1,5 @@
+# Returns the current velocity config (snapshot of velocity_node parameters).
+---
+bool success
+string message
+robot_interfaces/VelocityConfig config

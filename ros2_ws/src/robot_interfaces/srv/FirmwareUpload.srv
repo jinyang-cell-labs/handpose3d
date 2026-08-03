@@ -1,0 +1,12 @@
+# Upload firmware in chunks before flashing
+string session_id            # Unique session identifier (UUID)
+uint8[] chunk_data           # Firmware chunk (up to 256KB per chunk)
+int32 chunk_index            # Current chunk number (0-based)
+int32 total_chunks           # Total number of chunks
+bool is_final_chunk          # True if this is the last chunk
+string checksum              # SHA256 of complete firmware (only on final chunk)
+---
+bool success
+string message
+int32 bytes_received         # Total bytes received so far
+bool upload_complete         # True when all chunks received and verified

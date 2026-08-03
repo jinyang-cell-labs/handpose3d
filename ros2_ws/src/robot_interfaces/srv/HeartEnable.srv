@@ -1,0 +1,8 @@
+# Heart power board set enable service
+
+uint32 can_channel    # CAN channel (0-11)
+bool[12] enable       # 12 enable flags
+bool[4] iso_enable    # 4 isolation enable flags
+---
+bool success
+string message

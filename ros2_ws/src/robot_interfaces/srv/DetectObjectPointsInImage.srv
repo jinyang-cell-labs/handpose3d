@@ -1,0 +1,15 @@
+# Trigger a VLM with a prompt to detect objects in an image and return the image points of the detected objects.
+
+# Prompt for the VLM
+string prompt
+
+---
+
+# Detected object points in the image
+geometry_msgs/PointStamped image_point
+
+# Success boolean
+bool success
+
+# Message with additional information
+string message

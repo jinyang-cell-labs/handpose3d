@@ -1,0 +1,7 @@
+# Actuator electrical alignment service
+
+string[] name                     # List of actuators
+---
+bool success
+string message
+string[] failed_name              # Names of actuators that failed electrical alignment

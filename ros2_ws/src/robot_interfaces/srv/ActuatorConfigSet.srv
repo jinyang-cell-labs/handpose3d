@@ -1,0 +1,8 @@
+# Actuator configuration set service
+# Supports setting different configurations for multiple actuators at once
+
+ActuatorConfig[] configs   # List of configurations to set
+---
+bool success
+string message
+string[] failed_name       # Names of actuators that failed configuration

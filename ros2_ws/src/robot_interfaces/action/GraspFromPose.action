@@ -1,0 +1,15 @@
+# --- GOAL (Inputs) ---
+geometry_msgs/PoseStamped pose
+bool grasp
+bool place
+bool vertical
+bool no_orientation
+
+---
+# --- RESULT (Final Outcome) ---
+bool success
+string message
+
+---
+# --- FEEDBACK (Progress Updates) ---
+string current_state  # e.g. "Planning", "Moving to Approach", "Aligning Gripper"

@@ -1,0 +1,7 @@
+# Actuator zeroing for endstop alignment
+
+string[] name
+---
+bool success
+string message
+string[] failed_name              # Names of actuators that failed zeroing

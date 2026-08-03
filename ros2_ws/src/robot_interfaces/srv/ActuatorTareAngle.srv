@@ -1,0 +1,8 @@
+# Tare each named actuator's angle to 0.0 rad (resets the motor's zero offset).
+# Empty name list = tare all configured actuators.
+
+string[] name
+---
+bool success
+string message
+string[] failed_name              # Names of actuators that failed tare-angle

@@ -1,0 +1,9 @@
+# Sets action scale values for the loaded policy.
+
+string[] name
+float64[] scale
+
+---
+
+bool success
+string message

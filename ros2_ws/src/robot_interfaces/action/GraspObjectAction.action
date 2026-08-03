@@ -1,0 +1,17 @@
+# Action to request grasping an object by name and receive feedback
+
+# Name of the object to grasp
+string object_name
+
+---
+
+# Success boolean indicating if the pipeline started successfully
+bool success
+
+# Message providing additional information about the result
+string message
+
+---
+
+# Feedback during the grasping process
+string feedback_message

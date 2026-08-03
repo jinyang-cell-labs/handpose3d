@@ -1,0 +1,8 @@
+# Actuator start/stop service for multiple motors
+
+string[] name               # List of actuators to start/stop
+bool start                  # true to start motor, false to stop motor
+---
+bool success
+string message
+string[] failed_name        # Names of actuators that failed to start/stop

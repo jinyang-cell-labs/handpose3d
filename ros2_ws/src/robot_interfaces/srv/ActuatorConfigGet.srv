@@ -1,0 +1,9 @@
+# Actuator configuration get service
+# requests configuration for multiple actuators
+
+string[] name   # List of actuators to query
+---
+bool success
+string message
+ActuatorConfig[] configs    # List of retrieved configurations
+string[] failed_name        # IDs of actuators that failed query

@@ -1,0 +1,8 @@
+# Returns the current controller mode.
+
+---
+
+bool success
+string message
+string mode              # Current mode (e.g. 'idle', 'holding', 'default_pose', 'rl_running', 'damping')
+string[] available_modes # All valid modes

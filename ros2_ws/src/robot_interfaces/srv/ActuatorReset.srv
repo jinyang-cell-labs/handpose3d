@@ -1,0 +1,7 @@
+# Actuator reset service
+
+string[] name               # List of actuators to reset
+---
+bool success
+string message
+string[] failed_name        # Names of actuators that failed to reset

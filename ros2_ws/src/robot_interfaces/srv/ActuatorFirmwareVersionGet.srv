@@ -1,0 +1,11 @@
+# Actuator firmware version get service
+# Requests firmware/bootloader version info from one or more actuators
+
+string[] name           # Actuators to query (empty = all configured actuators)
+---
+bool success
+string message
+string[] queried_name   # Names successfully queried (parallel to versions below)
+string[] app_version    # e.g. "1.2.3"
+string[] bootloader_version
+string[] failed_name    # Actuators that failed to respond

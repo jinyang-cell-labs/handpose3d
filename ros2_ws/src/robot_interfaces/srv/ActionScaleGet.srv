@@ -1,0 +1,8 @@
+# Returns current action scale values for the loaded policy.
+
+---
+
+bool success
+string message
+string[] name
+float64[] scale

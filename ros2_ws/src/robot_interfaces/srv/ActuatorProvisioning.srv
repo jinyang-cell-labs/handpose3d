@@ -1,0 +1,11 @@
+# Actuator provisioning service
+# Set actuator_name: robot resolves can_channel/can_id/byte_value from model config.
+# Empty actuator_name: raw fields below are used directly (Qt dev GUI path).
+string actuator_name  # e.g. "hip_pitch_left"
+uint32 can_channel    # 0-11
+uint32 can_id         # 0-8 (NUM_CAN_DEVICES - 1)
+uint32 byte_value     # 0-255
+---
+bool success
+string message
+

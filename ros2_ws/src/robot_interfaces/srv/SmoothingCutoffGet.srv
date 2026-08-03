@@ -1,0 +1,7 @@
+# Returns the current smoothing cutoff frequency.
+
+---
+
+bool success
+string message
+float64 cutoff_hz

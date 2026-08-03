@@ -1,0 +1,15 @@
+# Partial update of velocity_node config. Only the fields named in
+# fields_to_set are applied; values for those fields are read from `config`.
+# Other fields in `config` are ignored. Validation runs through the node's
+# parameter callback — any rejection short-circuits the request.
+#
+# fields_to_set values: any subset of
+#   max_velocity, min_velocity, max_accel, max_decel,
+#   axis_deadband, deadband_velocity
+
+robot_interfaces/VelocityConfig config
+string[] fields_to_set
+---
+bool success
+string message
+robot_interfaces/VelocityConfig config   # echoed config after apply

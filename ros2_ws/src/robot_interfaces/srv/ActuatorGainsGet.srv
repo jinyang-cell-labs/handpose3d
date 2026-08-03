@@ -1,0 +1,9 @@
+# Returns current joint stiffness (Kp) and damping (Kd) gains.
+
+---
+
+bool success
+string message
+string[] name
+float64[] stiffness
+float64[] damping

@@ -1,0 +1,9 @@
+# Sets the active controller type.
+# Set to "" or "none" to unload the policy and revert to default robot config.
+
+string controller_type
+
+---
+
+bool success
+string message

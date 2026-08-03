@@ -1,0 +1,8 @@
+# Sets the lowpass smoothing cutoff frequency.
+
+float64 cutoff_hz
+
+---
+
+bool success
+string message
